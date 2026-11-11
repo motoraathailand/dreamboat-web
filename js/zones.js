@@ -16,9 +16,9 @@ export const ZONES = [
     hemiSky: c('#ffc6a0'), hemiGround: c('#5c3c46'), hemiInt: 1.25,
     dirColor: c('#ffb27a'), dirInt: 2.6,
     waterDeep: c('#3b3050'), waterTint: c('#ffb78a'),
-    exposure: 0.86, saturation: 1.16, lift: c('#2a1830'), gain: c('#fff1dc'), vignette: 0.42,
-    bloom: 0.5, lanternGlow: 0.35, motes: c('#ffe2a0'),
-    shadowTint: c('#c4b0dc'), rays: 0.45, petals: 1.0, shallow: c('#6e5040'), contrast: 1.1,
+    exposure: 0.88, saturation: 1.2, lift: c('#2a1830'), gain: c('#fff1dc'), vignette: 0.42,
+    bloom: 0.55, lanternGlow: 0.35, motes: c('#ffe2a0'),
+    shadowTint: c('#c4b0dc'), rays: 0.45, petals: 1.0, shallow: c('#6e5040'), contrast: 1.1, blackPt: 0.035,
   },
   {
     id: 'lantern-bridge', nameKey: 'z2name', subKey: 'z2sub',
@@ -32,8 +32,8 @@ export const ZONES = [
     dirColor: c('#a9a4ff'), dirInt: 0.7,
     waterDeep: c('#0f1230'), waterTint: c('#8a7ad0'),
     exposure: 1.12, saturation: 1.12, lift: c('#140c2a'), gain: c('#ffe7cf'), vignette: 0.5,
-    bloom: 0.8, lanternGlow: 1.0, motes: c('#ffd27a'),
-    shadowTint: c('#8c88c8'), rays: 0.12, petals: 0.0, shallow: c('#2a2038'), contrast: 1.08,
+    bloom: 0.9, lanternGlow: 1.0, motes: c('#ffd27a'),
+    shadowTint: c('#8c88c8'), rays: 0.12, petals: 0.0, shallow: c('#2a2038'), contrast: 1.08, blackPt: 0.02,
   },
 ];
 

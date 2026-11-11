@@ -15,3 +15,9 @@ Provider: MOTOR AA.
 - Water: fine ripple normals, sun glitter, softly blurred reflections, shallows + lapping shore foam, soft water-land edge, hull contact shadow.
 - Quality: `?q=high` adds soft shadows + Kuwahara; `mid` drops those; `low` also drops god rays, reflection blur, glitter, FXAA.
   Adaptive quality steps down high → mid → low, then pixel ratio, then bloom.
+
+## v3 — boat interior fix + clarity pass
+- Fix: water no longer shows inside the boat. The water shader discards fragments that fall inside the hull volume
+  (same hull formulas as boat.js, using the boat's live world matrix, so it holds during bobbing/rowing). Real slatted floorboards follow the inner hull; boat floats a little higher.
+- Clarity: HDR bloom threshold (sky no longer blooms), black point + contrast per zone, mobile "brush-lite" painterly pass (5 taps), sharper sun-glitter path, birds, calmer petals/motes, livelier rower (look-around, breathing, nod).
+- Debug: `?cam=dist,height,yaw` fixed camera, `?bob=3` strong bobbing.

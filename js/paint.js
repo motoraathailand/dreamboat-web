@@ -79,7 +79,7 @@ export function paint(mat, o = {}) {
         float backP = pow(max(dot(vdP, pSunDir), 0.0), 5.0);
         outgoingLight += diffuseColor.rgb * pSunCol * backP * ${f(trans)};
         float rimP = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 3.0);
-        outgoingLight += pSunCol * rimP * ${f(rim)} * (0.25 + 0.75 * backP);
+        outgoingLight += pSunCol * rimP * ${f(rim)} * (0.08 + 0.92 * backP);
         if (!gl_FrontFacing) outgoingLight *= ${f(1 - inner)};
       }
       #endif

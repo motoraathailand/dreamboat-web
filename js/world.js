@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { Reflector } from 'three/addons/objects/Reflector.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { paint, PU } from './paint.js?v=2';
+import { paint, PU } from './paint.js?v=3';
 
 // ---------- small deterministic RNG ----------
 export function rng(seed = 1) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
@@ -246,7 +246,7 @@ export function makeWater(texSize, hmap) {
       time: { value: 0 }, deep: { value: new THREE.Color() }, tint: { value: new THREE.Color() }, shallow: { value: new THREE.Color('#6a5040') },
       sunDir: { value: new THREE.Vector3() }, sunColor: { value: new THREE.Color() },
       ripples: { value: Array.from({ length: RIPPLES }, () => new THREE.Vector4(0, 0, -100, 0)) },
-      boat: { value: new THREE.Vector4() }, rq: { value: 1 }, hTex: { value: null }, hB: { value: new THREE.Vector4() }, foamCol: { value: new THREE.Color(1, 0.9, 0.8) },
+      boat: { value: new THREE.Vector4() }, boatInv: { value: new THREE.Matrix4() }, rq: { value: 1 }, hTex: { value: null }, hB: { value: new THREE.Vector4() }, foamCol: { value: new THREE.Color(1, 0.9, 0.8) },
     }]),
     vertexShader: `
       uniform mat4 textureMatrix; varying vec4 vUv; varying vec3 vWorld;
@@ -261,7 +261,7 @@ export function makeWater(texSize, hmap) {
       }`,
     fragmentShader: `
       uniform sampler2D tDiffuse, hTex; uniform float time, rq; uniform vec3 deep, tint, shallow, sunDir, sunColor, color, foamCol;
-      uniform vec4 ripples[${RIPPLES}]; uniform vec4 boat, hB;
+      uniform vec4 ripples[${RIPPLES}]; uniform vec4 boat, hB; uniform mat4 boatInv;
       varying vec4 vUv; varying vec3 vWorld;
       #include <common>
       #include <fog_pars_fragment>
@@ -269,7 +269,19 @@ export function makeWater(texSize, hmap) {
       float n2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f); return mix(mix(h21(i),h21(i+vec2(1,0)),f.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x), f.y); }
       vec2 dn(vec2 q){ float a = n2(q); return vec2(n2(q + vec2(0.2, 0.0)) - a, n2(q + vec2(0.0, 0.2)) - a) * 5.0; }
       vec2 wave(vec2 p, vec2 dir, float fq, float sp, float amp){ float ph = dot(p, dir) * fq + time * sp; return dir * cos(ph) * amp * fq; }
+      // keep water out of the boat: discard where this water point lies inside the hull volume (same formulas as boat.js)
+      bool insideHull(vec3 wp){
+        vec3 lp = (boatInv * vec4(wp, 1.0)).xyz;
+        float s = lp.z / 2.2; float as = abs(s);
+        if (as >= 1.0) return false;
+        float w = 0.7 * pow(max(1.0 - pow(as, 2.4), 0.0), 0.55) + 0.02;
+        if (abs(lp.x) >= w) return false;
+        float si = abs(lp.x) / w;
+        float yb = 0.42 + 0.28 * pow(as, 2.5) - 0.5 * (1.0 - 0.55 * s * s) * pow(sqrt(max(1.0 - si * si, 0.0)), 0.8) - 0.25;
+        return lp.y > yb - 0.004;
+      }
       void main(){
+        if (insideHull(vWorld)) discard;
         vec2 p = vWorld.xz;
         float dist = length(vWorld - cameraPosition);
         float calm = exp(-dist / 90.0);
@@ -337,10 +349,10 @@ export function makeWater(texSize, hmap) {
         float sunUp = smoothstep(-0.05, 0.05, sunDir.y);
         float spec = pow(nh, 220.0) * 2.4 + pow(nh, 30.0) * 0.12;
         if (rq > 0.5) {
-          vec2 gp = p * 5.5 + g * 12.0; vec2 gi = floor(gp); float gr = h21(gi);
+          vec2 gp = p * 7.0 + g * 14.0; vec2 gi = floor(gp); float gr = h21(gi);
           float tw = 0.5 + 0.5 * sin(time * (2.0 + gr * 6.0) + gr * 40.0);
           float sp = step(0.8, gr) * tw * smoothstep(0.35, 0.0, length(fract(gp) - 0.5));
-          spec += sp * pow(nh, 24.0) * 1.6 * calm * calm;
+          spec += sp * (pow(nh, 28.0) * 1.2 + pow(nh, 90.0) * 2.4) * calm;
         }
         col += sunColor * spec * sunUp;
         // shoreline foam: thin broken line that laps slowly
@@ -441,7 +453,7 @@ export function makeTrees(path, quality) {
     { geo: blobClump(41, 6, { height: 2.6, spread: 0.18, size: 0.5, column: true, squash: 1.0 }), kind: 'column' }, // cypress / poplar
     { geo: pineGeo(53), kind: 'pine' },
   ].map(v => { v.geo = v.geo.index ? v.geo.toNonIndexed() : v.geo; return v; });
-  const leafMat = paint(new THREE.MeshLambertMaterial({ vertexColors: true }), { freq: 1.3, amt: 0.14, trans: 0.55, rim: 0.35 });
+  const leafMat = paint(new THREE.MeshLambertMaterial({ vertexColors: true }), { freq: 1.3, amt: 0.14, trans: 0.55, rim: 0.22 });
   const trunkGeo = new THREE.CylinderGeometry(0.09, 0.2, 1, 7, 3); trunkGeo.translate(0, 0.5, 0);
   { const p = trunkGeo.attributes.position; for (let i = 0; i < p.count; i++) { const y = p.getY(i); p.setX(i, p.getX(i) + Math.sin(y * 3.0) * 0.05); } trunkGeo.computeVertexNormals(); }
   const trunkMat = paint(new THREE.MeshLambertMaterial({ color: '#4a3226' }), { freq: 2.0, amt: 0.15 });
@@ -854,20 +866,21 @@ export function makePetals(count, uniforms) {
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('seed', new THREE.BufferAttribute(seed, 1));
   const mat = new THREE.ShaderMaterial({
-    uniforms: { time: uniforms.time, pr: uniforms.pr, center: { value: new THREE.Vector3() }, opacity: { value: 1 }, colA: { value: new THREE.Color('#ffc4b0') }, colB: { value: new THREE.Color('#ff9a8a') }, light: { value: new THREE.Color(1, 1, 1) }, spread: { value: new THREE.Vector2(S.x, S.z) } },
+    uniforms: { time: uniforms.time, pr: uniforms.pr, center: { value: new THREE.Vector3() }, opacity: { value: 1 }, colA: { value: new THREE.Color('#f4a0a0') }, colB: { value: new THREE.Color('#e07888') }, light: { value: new THREE.Color(1, 1, 1) }, spread: { value: new THREE.Vector2(S.x, S.z) } },
     transparent: true, depthWrite: false,
     vertexShader: `
       attribute float seed; uniform float time, pr; uniform vec3 center; uniform vec2 spread; varying float vS; varying float vRot; varying float vFlip; varying float vA;
       void main(){
         vec3 p = position;
-        p.y = mod(p.y - time * (0.25 + seed * 0.25), 14.0) + 0.1;
+        p.y = mod(p.y - time * (0.25 + seed * 0.25), 13.0) + 1.2;
+        float lowFade = smoothstep(1.2, 3.0, p.y);
         p.x += sin(time * 0.4 + seed * 20.0) * 2.0 + time * 0.6;
         p.z += cos(time * 0.3 + seed * 13.0) * 1.5;
         vec2 hs = spread; vec2 wp = mod(p.xz - center.xz + hs, 2.0 * hs) - hs + center.xz;
         vec4 mv = viewMatrix * vec4(wp.x, p.y, wp.y, 1.0);
         gl_Position = projectionMatrix * mv;
         vS = seed; vRot = time * (0.6 + seed) + seed * 30.0; vFlip = abs(sin(time * (0.8 + seed) + seed * 9.0));
-        vA = smoothstep(4.0, 9.0, -mv.z) * (1.0 - smoothstep(40.0, 60.0, -mv.z)) * 0.85;
+        vA = smoothstep(4.0, 9.0, -mv.z) * (1.0 - smoothstep(40.0, 60.0, -mv.z)) * 0.8 * lowFade;
         gl_PointSize = min(0.75 * pr * (60.0 / -mv.z) * (0.7 + seed * 0.6), 9.0 * pr);
       }`,
     fragmentShader: `uniform vec3 colA, colB, light; uniform float opacity; varying float vS, vRot, vFlip, vA;
@@ -883,4 +896,52 @@ export function makePetals(count, uniforms) {
   });
   const pts = new THREE.Points(g, mat); pts.frustumCulled = false; pts.name = 'petals';
   return pts;
+}
+
+// distant birds: a loose flock gliding across the sunset sky, wings flapping in the vertex shader
+export function makeBirds(count, uniforms) {
+  const pos = [], idx = [], wing = [];
+  // one bird = body point + two wings (4 triangles)
+  const base = [[0, 0, -0.25], [0, 0, 0.35], [-1, 0.0, 0.05], [1, 0.0, 0.05], [-0.45, 0, 0.12], [0.45, 0, 0.12]];
+  const off = [], seed = [];
+  for (let b = 0; b < count; b++) {
+    const ox = rr(-30, 30), oy = rr(-6, 8), oz = rr(-14, 14), sd = R();
+    const k = pos.length / 3;
+    for (const v of base) { pos.push(...v); off.push(ox, oy, oz); seed.push(sd); }
+    wing.push(0, 0, 1, 1, 0.45, 0.45);
+    idx.push(k, k + 4, k + 1, k + 4, k + 2, k + 1, k, k + 1, k + 5, k + 5, k + 1, k + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('wing', new THREE.Float32BufferAttribute(wing, 1));
+  g.setAttribute('off', new THREE.Float32BufferAttribute(off, 3));
+  g.setAttribute('seed', new THREE.Float32BufferAttribute(seed, 1));
+  g.setIndex(idx);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { time: uniforms.time, center: { value: new THREE.Vector3() }, col: { value: new THREE.Color('#3a2430') }, heading: { value: 0 } },
+    side: THREE.DoubleSide, fog: false,
+    vertexShader: `attribute float wing, seed; attribute vec3 off; uniform float time, heading; uniform vec3 center;
+      void main(){
+        vec3 p = position * (1.1 + seed * 0.5);
+        float flap = sin(time * (4.0 + seed * 2.0) + seed * 30.0);
+        float glide = smoothstep(-0.2, 0.6, sin(time * 0.35 + seed * 10.0));
+        p.y += wing * flap * 0.55 * (1.0 - glide * 0.8) * abs(position.x);
+        // flock drifts across the sky ahead of the boat, looping slowly
+        float t = mod(time * 2.2 + seed * 8.0, 260.0) - 130.0;
+        vec3 o = off + vec3(t, sin(time * 0.3 + seed * 6.0) * 1.5, 0.0);
+        float ch = cos(heading), sh = sin(heading);
+        vec3 fwd = vec3(-sh, 0.0, -ch), side = vec3(ch, 0.0, -sh);
+        vec3 wp = center + fwd * (150.0 + o.z) + side * o.x + vec3(0.0, 38.0 + o.y, 0.0);
+        // wings span along 'side' (the flight direction is along side)
+        vec3 lp = vec3(p.z, p.y, p.x);
+        wp += side * lp.x + vec3(0.0, lp.y, 0.0) + fwd * lp.z;
+        gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+      }`,
+    fragmentShader: `uniform vec3 col; void main(){ gl_FragColor = vec4(col, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+  });
+  const mesh = new THREE.Mesh(g, mat); mesh.frustumCulled = false; mesh.renderOrder = -4; mesh.name = 'birds';
+  return mesh;
 }

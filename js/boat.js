@@ -1,12 +1,15 @@
 // Procedural wooden rowing boat with a rower, two oars and a hanging bow lantern.
 import * as THREE from 'three';
-import { lanternMesh } from './world.js?v=2';
-import { paint } from './paint.js?v=2';
+import { lanternMesh } from './world.js?v=3';
+import { paint } from './paint.js?v=3';
 
 const LEN = 4.4;
 const hw = (s) => 0.7 * Math.pow(Math.max(1 - Math.pow(Math.abs(s), 2.4), 0.0), 0.55) + 0.02;
 const gun = (s) => 0.42 + 0.28 * Math.pow(Math.abs(s), 2.5);
 const dep = (s) => 0.5 * (1 - 0.55 * s * s);
+// inner hull surface height at (s, x); the water shader uses the same formulas to keep water out of the boat
+export const hullY = (s, x) => { const w = hw(s); const si = Math.min(1, Math.abs(x) / w); return gun(s) - dep(s) * Math.pow(Math.sqrt(1 - si * si), 0.8) - 0.25; };
+export const BOAT_FLOAT = 0.06; // extra freeboard
 
 function hullGeometry() {
   // smooth hull with painted plank bands and a coloured sheer strake
@@ -50,7 +53,7 @@ export class Boat {
     this.root.add(this.body);
     const wood = lam('#8a5634');
     const dark = lam('#4a2c1c');
-    const hull = new THREE.Mesh(hullGeometry(), paint(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }), { freq: 5.0, amt: 0.1, rim: 0.4, inner: 0.35 }));
+    const hull = new THREE.Mesh(hullGeometry(), paint(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }), { freq: 5.0, amt: 0.1, rim: 0.4, inner: 0.18 }));
     this.body.add(hull);
     // gunwale rims
     for (const side of [-1, 1]) {
@@ -74,13 +77,38 @@ export class Boat {
       const w = hw(s) * 2 - 0.08; const seat = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, 0.32), wood);
       seat.position.set(0, gun(s) - 0.42, s * LEN / 2); this.body.add(seat);
     }
-    // floor boards + a small bundle and a basket for character
-    const floor = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.04, LEN * 0.72), lam('#6a4028'));
-    floor.position.set(0, -0.66, 0); this.body.add(floor);
-    const basket = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.16, 0.22, 10, 1), lam('#b08848', { freq: 12.0, amt: 0.25 }));
-    basket.position.set(0.12, -0.53, 1.35); this.body.add(basket);
-    const bundle = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), lam('#7a4a6a')); bundle.scale.set(1.2, 0.6, 0.9);
-    bundle.position.set(-0.15, -0.55, -1.1); this.body.add(bundle);
+    // dry floorboards that follow the inside of the hull (slats with small gaps), plus a basket and a bundle
+    {
+      const slats = [-0.22, -0.11, 0.0, 0.11, 0.22], NSz = 24, pos = [], col = [], idx = [];
+      const cW = new THREE.Color('#b08058'), tmp = new THREE.Color();
+      let base = 0;
+      slats.forEach((sx, si) => {
+        for (let i = 0; i <= NSz; i++) {
+          const ss = -0.78 + 1.56 * i / NSz;
+          for (const dx of [-0.048, 0.048]) {
+            const x = (sx + dx) * Math.min(1, hw(ss) / 0.55);
+            pos.push(x, hullY(ss, x) + 0.035, ss * LEN / 2);
+            tmp.copy(cW).multiplyScalar(0.86 + 0.14 * Math.sin(si * 2.3 + i * 0.7) + (i % 6 === 0 ? -0.18 : 0)); col.push(tmp.r, tmp.g, tmp.b);
+          }
+          if (i < NSz) { const a = base + i * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+        }
+        base += (NSz + 1) * 2;
+      });
+      const fg = new THREE.BufferGeometry();
+      fg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); fg.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      fg.setIndex(idx); fg.computeVertexNormals();
+      const floor = new THREE.Mesh(fg, paint(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }), { freq: 9.0, amt: 0.12, rim: 0.2 }));
+      this.body.add(floor);
+      // cross battens holding the slats
+      for (const ss of [-0.55, -0.2, 0.35, 0.7]) {
+        const b = new THREE.Mesh(new THREE.BoxGeometry(hw(ss) * 1.1, 0.03, 0.07), dark); b.position.set(0, hullY(ss, 0) + 0.065, ss * LEN / 2); this.body.add(b);
+      }
+    }
+    const basket = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.13, 0.2, 12, 1), lam('#c09858', { freq: 12.0, amt: 0.25 }));
+    basket.position.set(0.1, hullY(0.62, 0.1) + 0.16, 0.62 * LEN / 2 + 0.25); this.body.add(basket);
+    const fruit = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), lam('#e07a3a')); fruit.position.copy(basket.position).add(new THREE.Vector3(0.02, 0.1, 0)); this.body.add(fruit);
+    const bundle = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8), lam('#7a4a6a')); bundle.scale.set(1.2, 0.6, 0.9);
+    bundle.position.set(-0.1, hullY(-0.5, -0.1) + 0.14, -0.5 * LEN / 2); this.body.add(bundle);
     // bow lantern pole (front = -z)
     const pole = new THREE.Mesh(new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(new THREE.Vector3(0, 0.3, -2.05), new THREE.Vector3(0, 1.9, -2.2), new THREE.Vector3(0, 2.05, -2.95)), 16, 0.035, 6), dark);
     this.body.add(pole);
@@ -107,16 +135,18 @@ export class Boat {
     this.scarfTail = new THREE.Mesh(tailG, paint(new THREE.MeshLambertMaterial({ color: '#c0503a', side: THREE.DoubleSide }), { freq: 6.0, amt: 0.1, rim: 0.5 }));
     this.scarfTail.position.set(0.05, 0.88, -0.15); this.torso.add(this.scarfTail);
     const skin = lam('#e2b292', { freq: 8.0, amt: 0.06, rim: 0.5 });
+    this.headG = new THREE.Group(); this.headG.position.y = 0.9; this.torso.add(this.headG);
+    const HG = this.headG; const hgAdd = HG.add.bind(HG); HG.add = (...o) => { o.forEach(m => m.position.y -= 0.9); return hgAdd(...o); };
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 18, 14), skin);
-    head.position.y = 1.03; this.torso.add(head);
+    head.position.y = 1.03; this.headG.add(head);
     const hair = new THREE.Mesh(new THREE.SphereGeometry(0.155, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), lam('#2a1c18'));
-    hair.position.y = 1.04; hair.rotation.x = 0.5; this.torso.add(hair);
-    const bun = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), lam('#2a1c18')); bun.position.set(0, 1.12, -0.13); this.torso.add(bun);
+    hair.position.y = 1.04; hair.rotation.x = 0.5; this.headG.add(hair);
+    const bun = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), lam('#2a1c18')); bun.position.set(0, 1.12, -0.13); this.headG.add(bun);
     // conical woven hat with a soft brim
     const hatProfile = [[0.0, 0.25], [0.08, 0.2], [0.26, 0.08], [0.44, -0.0], [0.46, -0.02], [0.0, -0.02]].map(([r, y]) => new THREE.Vector2(r, y));
     const hat = new THREE.Mesh(new THREE.LatheGeometry(hatProfile.reverse(), 20), paint(new THREE.MeshLambertMaterial({ color: '#d8b06a', side: THREE.DoubleSide }), { freq: 14.0, amt: 0.18, rim: 0.6, trans: 0.4 }));
-    hat.position.y = 1.13; this.torso.add(hat);
-    const hatBand = new THREE.Mesh(new THREE.TorusGeometry(0.155, 0.018, 4, 16), lam('#a8402e')); hatBand.rotation.x = Math.PI / 2; hatBand.position.y = 1.16; this.torso.add(hatBand);
+    hat.position.y = 1.13; this.headG.add(hat);
+    const hatBand = new THREE.Mesh(new THREE.TorusGeometry(0.155, 0.018, 4, 16), lam('#a8402e')); hatBand.rotation.x = Math.PI / 2; hatBand.position.y = 1.16; this.headG.add(hatBand);
     this.shoulders = [new THREE.Vector3(-0.2, 0.78, 0.02), new THREE.Vector3(0.2, 0.78, 0.02)];
     const armMat = lam('#34406c', { freq: 6.0, amt: 0.12, rim: 0.5 });
     const armGeo = new THREE.CapsuleGeometry(0.055, 1, 4, 8); armGeo.translate(0, 0.5, 0);
@@ -179,7 +209,14 @@ export class Boat {
     }
     // torso lean
     const lean = (0.03 + 0.3 * Math.cos(ph)) * ra;
-    this.torso.rotation.x = lean;
+    const breath = Math.sin(t * 1.6) * 0.012 * (1 - ra);
+    this.torso.rotation.x = lean + breath;
+    this.torso.rotation.z = 0.03 * Math.sin(t * 0.83 + 0.4) * (1 - ra) - 0.02 * Math.sin(ph) * ra;
+    // head: calm look-around while drifting, gentle nod with each stroke
+    const look = Math.sin(t * 0.21) * 0.55 + Math.sin(t * 0.53 + 1.0) * 0.2;
+    this.headG.rotation.y = look * (1 - ra) * 0.9;
+    this.headG.rotation.x = -lean * 0.45 + 0.05 * Math.sin(ph * 2.0) * ra + Math.sin(t * 0.37) * 0.04 * (1 - ra);
+    this.headG.rotation.z = Math.sin(t * 0.29 + 2.0) * 0.05 * (1 - ra);
     this.torso.position.z = lean * 0.15;
     // arms reach handles
     this.body.updateMatrixWorld(true);
@@ -197,9 +234,10 @@ export class Boat {
     this.scarfTail.rotation.x = -0.9 - 0.25 * Math.sin(t * 3.1) - Math.min(speed, 7) * 0.05;
     this.scarfTail.rotation.z = 0.15 * Math.sin(t * 2.3);
     // bob, pitch with surge, roll
-    this.body.position.y = 0.05 * Math.sin(t * 1.35) + 0.03 * Math.sin(t * 2.3 + 1.1) - 0.02 * drive * ra;
-    this.body.rotation.x = 0.022 * Math.sin(t * 1.1) + 0.03 * drive * ra;
-    this.body.rotation.z = 0.035 * Math.sin(t * 0.83 + 0.4) + 0.012 * Math.sin(t * 1.9);
+    const bm = this.bobMul || 1;
+    this.body.position.y = BOAT_FLOAT + (0.05 * Math.sin(t * 1.35) + 0.03 * Math.sin(t * 2.3 + 1.1) - 0.02 * drive * ra) * bm;
+    this.body.rotation.x = (0.022 * Math.sin(t * 1.1) + 0.03 * drive * ra) * bm;
+    this.body.rotation.z = (0.035 * Math.sin(t * 0.83 + 0.4) + 0.012 * Math.sin(t * 1.9)) * bm;
     // lantern swings as a pendulum
     this.lanternPivot.rotation.x = -0.12 * Math.sin(t * 1.35 + 0.6) - 0.08 * drive * ra;
     this.lanternPivot.rotation.z = 0.1 * Math.sin(t * 0.83 + 1.4);

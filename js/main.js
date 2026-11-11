@@ -6,15 +6,16 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
-import { PU } from './paint.js?v=2';
-import * as W from './world.js?v=2';
-import { Boat } from './boat.js?v=2';
-import { ZONES, zoneParamsAt } from './zones.js?v=2';
-import { DreamAudio } from './audio.js?v=2';
-import { LANGS, detectLang, setLang, getLang, t } from './i18n.js?v=2';
+import { PU } from './paint.js?v=3';
+import * as W from './world.js?v=3';
+import { Boat } from './boat.js?v=3';
+import { ZONES, zoneParamsAt } from './zones.js?v=3';
+import { DreamAudio } from './audio.js?v=3';
+import { LANGS, detectLang, setLang, getLang, t } from './i18n.js?v=3';
 
 const qs = new URLSearchParams(location.search);
 const SHOT = qs.has('shot');
+const CAM = qs.get('cam') ? qs.get('cam').split(',').map(Number) : null; // debug camera: dist,height,yaw
 const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
 const isMobile = isTouch && Math.min(screen.width, screen.height) < 900;
 const QUALITY = qs.get('q') || (isMobile ? 'mid' : 'high');
@@ -22,7 +23,7 @@ const QUALITY = qs.get('q') || (isMobile ? 'mid' : 'high');
 // ---------- renderer ----------
 const canvas = document.getElementById('c');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', preserveDrawingBuffer: SHOT });
-const maxPR = QUALITY === 'low' ? 0.85 : QUALITY === 'mid' ? Math.min(devicePixelRatio, 1.5) : Math.min(devicePixelRatio, 2);
+const maxPR = QUALITY === 'low' ? 0.85 : QUALITY === 'mid' ? Math.min(devicePixelRatio, 1.75) : Math.min(devicePixelRatio, 2);
 let pixelRatio = QUALITY === 'high' ? Math.min(devicePixelRatio, 1.5) : Math.min(maxPR, 1.25);
 renderer.setPixelRatio(pixelRatio);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -61,7 +62,8 @@ const paperColors = []; for (let i = 0; i < floating.items.length; i++) { const 
 const motes = W.makePoints(QUALITY === 'low' ? 140 : 260, { x: 45, y0: 0.6, y1: 9, z: 45 }, 'motes', shared); scene.add(motes);
 const skyL = W.makePoints(70, { x: 220, y0: 10, y1: 120, z: 220 }, 'sky', shared); scene.add(skyL);
 skyL.material.uniforms.color.value.set(1.6, 0.75, 0.3);
-const petals = W.makePetals(QUALITY === 'low' ? 90 : 220, shared); scene.add(petals);
+const petals = W.makePetals(QUALITY === 'low' ? 50 : QUALITY === 'mid' ? 80 : 130, shared); scene.add(petals);
+const birds = W.makeBirds(QUALITY === 'low' ? 7 : 14, shared); scene.add(birds);
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1); scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 2); scene.add(sun, sun.target);
@@ -71,17 +73,17 @@ if (SHADOWS) {
   sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.06; sun.shadow.radius = 3;
 }
 
-const boat = new Boat(); scene.add(boat.root);
+const boat = new Boat(); boat.bobMul = qs.has('bob') ? parseFloat(qs.get('bob')) || 3 : 1; scene.add(boat.root);
 // detail-only objects live on layer 1: drawn by the main camera but skipped by the water reflection pass
 const DETAIL = 1; camera.layers.enable(DETAIL);
 const onDetail = (o) => o.traverse(c => c.layers.set(DETAIL));
-onDetail(flowers); onDetail(lilies); onDetail(petals); onDetail(motes); onDetail(reedsGrp.userData.grass);
+onDetail(flowers); onDetail(birds); onDetail(lilies); onDetail(petals); onDetail(motes); onDetail(reedsGrp.userData.grass);
 window.__buildMs = performance.now() - T0;
 
 // ---------- post ----------
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.65, 0.78);
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.55, 1.35); // HDR threshold: only lanterns / sun disc bloom, not the whole sky
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 const fxaa = new ShaderPass(FXAAShader);
@@ -91,12 +93,12 @@ composer.addPass(fxaa);
 const grade = new ShaderPass({
   uniforms: {
     tDiffuse: { value: null }, sat: { value: 1.08 }, lift: { value: new THREE.Color() }, gain: { value: new THREE.Color(1, 1, 1) }, vig: { value: 0.4 },
-    res: { value: new THREE.Vector2(1, 1) }, time: { value: 0 }, kuw: { value: 1 }, edges: { value: 1 }, brush: { value: 1.0 },
+    res: { value: new THREE.Vector2(1, 1) }, time: { value: 0 }, kuw: { value: 1 }, edges: { value: 1 }, blackPt: { value: 0.03 }, brush: { value: 1.0 },
     sunUV: { value: new THREE.Vector2(0.5, 0.5) }, rays: { value: 0 }, raySteps: { value: 16 }, rayCol: { value: new THREE.Color(1, 0.8, 0.6) }, contrast: { value: 1.0 },
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float sat, vig, time, kuw, edges, brush, rays, raySteps, contrast; uniform vec3 lift, gain, rayCol; uniform vec2 res, sunUV; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float sat, vig, time, kuw, edges, brush, blackPt, rays, raySteps, contrast; uniform vec3 lift, gain, rayCol; uniform vec2 res, sunUV; varying vec2 vUv;
     float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233)))*43758.5453); }
     float n2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f); return mix(mix(h(i),h(i+vec2(1,0)),f.x), mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x), f.y); }
     vec3 T(vec2 uv){ return texture2D(tDiffuse, uv).rgb; }
@@ -122,10 +124,23 @@ const grade = new ShaderPass({
       vec2 q = vUv * res / 6.0;
       vec2 w = vec2(n2(q * 0.35), n2(q * 0.35 + 7.3)) - 0.5;
       vec2 uv = vUv + w * px * 2.0 * brush;
-      vec3 c;
+      vec3 c; float edgeE = 0.0; vec3 lw = vec3(0.299, 0.587, 0.114);
       if (kuw > 0.5) {
         vec3 k = kuwahara(uv, px * 0.9 * brush);
         c = mix(T(uv), k, 0.82);
+        if (edges > 0.5) edgeE = abs(dot(T(vUv + vec2(px.x * 1.5, 0.0)), lw) - dot(T(vUv - vec2(px.x * 1.5, 0.0)), lw))
+                              + abs(dot(T(vUv + vec2(0.0, px.y * 1.5)), lw) - dot(T(vUv - vec2(0.0, px.y * 1.5)), lw));
+      } else if (edges > 0.5) {
+        // mobile "brush-lite": 5 taps along a slowly turning stroke field; keep the smoother of two
+        // oriented strokes (a 2-sector Kuwahara) — gives painted strokes for ~1/5 the cost
+        float ang = n2(q * 0.22 + 11.0) * 6.2832;
+        vec2 dA = vec2(cos(ang), sin(ang)) * px * 1.8 * brush, dB = vec2(-dA.y, dA.x);
+        vec3 c0 = T(uv), a1 = T(uv + dA), a2 = T(uv - dA), b1 = T(uv + dB), b2 = T(uv - dB);
+        vec3 mA = (c0 + a1 + a2) / 3.0, mB = (c0 + b1 + b2) / 3.0;
+        vec3 vA = (a1 - mA) * (a1 - mA) + (a2 - mA) * (a2 - mA) + (c0 - mA) * (c0 - mA);
+        vec3 vB = (b1 - mB) * (b1 - mB) + (b2 - mB) * (b2 - mB) + (c0 - mB) * (c0 - mB);
+        c = mix(c0, (vA.r + vA.g + vA.b) < (vB.r + vB.g + vB.b) ? mA : mB, 0.85);
+        edgeE = (abs(dot(a1, lw) - dot(a2, lw)) + abs(dot(b1, lw) - dot(b2, lw))) * 1.2;
       } else {
         c = T(uv) * 0.7 + 0.3 * T(vUv + w.yx * px * 3.5);
       }
@@ -152,12 +167,9 @@ const grade = new ShaderPass({
       c = mix(c, c * c * (3.0 - 2.0 * c), 0.25);
       c = (c - 0.5) * contrast + 0.5;
       // watercolour edge darkening (pigment pooling at value changes)
-      if (edges > 0.5) {
-        vec3 lw = vec3(0.299, 0.587, 0.114);
-        float e = abs(dot(T(vUv + vec2(px.x * 1.5, 0.0)), lw) - dot(T(vUv - vec2(px.x * 1.5, 0.0)), lw))
-                + abs(dot(T(vUv + vec2(0.0, px.y * 1.5)), lw) - dot(T(vUv - vec2(0.0, px.y * 1.5)), lw));
-        c *= 1.0 - 0.14 * smoothstep(0.04, 0.25, e);
-      }
+      c *= 1.0 - 0.16 * smoothstep(0.04, 0.25, edgeE);
+      // levels: set a gentle black point so silhouettes read on phones; warm the highlights
+      c = max(c - blackPt, 0.0) / (1.0 - blackPt);
       // paper / canvas grain: woven weave + fibres + fine grain
       vec2 fp = vUv * res;
       float weave = (sin(fp.x * 1.6) * sin(fp.y * 1.6)) * 0.5 + 0.5;
@@ -378,22 +390,24 @@ function frame() {
   const wu = water.material.uniforms;
   wu.time.value = time; wu.deep.value.copy(P.waterDeep); wu.tint.value.copy(P.waterTint); wu.sunDir.value.copy(P.sunDir); wu.sunColor.value.copy(P.sunColor).multiplyScalar(P.sunGlow);
   wu.boat.value.set(boatPos.x, boatPos.z, heading, Math.min(1, ST.speed / 4));
+  boat.body.updateMatrixWorld(true); wu.boatInv.value.copy(boat.body.matrixWorld).invert();
   wu.shallow.value.copy(P.shallow).multiplyScalar(0.6 + 0.4 * P.hemiInt); wu.foamCol.value.copy(P.skyHorizon).lerp(P.cloudColor, 0.5).multiplyScalar(0.9);
   water.position.set(Math.round(boatPos.x / 10) * 10, 0, Math.round(boatPos.z / 10) * 10);
   renderer.toneMappingExposure = P.exposure;
-  bloom.strength = P.bloom; grade.uniforms.sat.value = P.saturation; grade.uniforms.lift.value.copy(P.lift).multiplyScalar(0.25); grade.uniforms.gain.value.copy(P.gain); grade.uniforms.vig.value = P.vignette; grade.uniforms.time.value = time; grade.uniforms.contrast.value = P.contrast;
+  bloom.strength = P.bloom; grade.uniforms.sat.value = P.saturation; grade.uniforms.lift.value.copy(P.lift).multiplyScalar(0.25); grade.uniforms.gain.value.copy(P.gain); grade.uniforms.vig.value = P.vignette; grade.uniforms.time.value = time; grade.uniforms.contrast.value = P.contrast; grade.uniforms.blackPt.value = P.blackPt;
   // god rays: project the sun to screen space
   tmpV.copy(P.sunDir).multiplyScalar(900).add(camera.position).project(camera);
   const sunVis = tmpV.z < 1 ? THREE.MathUtils.smoothstep(1.0 - Math.max(Math.abs(tmpV.x), Math.abs(tmpV.y)), -0.6, 0.2) : 0;
   grade.uniforms.sunUV.value.set(tmpV.x * 0.5 + 0.5, tmpV.y * 0.5 + 0.5);
   grade.uniforms.rays.value = P.rays * sunVis * Math.max(0, Math.min(1, P.sunDir.y * 8 + 0.6));
   grade.uniforms.rayCol.value.copy(P.sunColor).lerp(P.skyHorizon, 0.4);
-  petals.material.uniforms.opacity.value = P.petals; petals.material.uniforms.center.value.copy(boatPos); petals.visible = P.petals > 0.02 && (level >= 2 || QUALITY === 'low');
+  petals.material.uniforms.opacity.value = P.petals;
+  birds.material.uniforms.center.value.copy(boatPos); birds.material.uniforms.col.value.copy(P.fogColor).multiplyScalar(0.32).lerp(P.skyTop, 0.2); birds.material.uniforms.heading.value = heading; birds.visible = P.petals > 0.05; petals.material.uniforms.center.value.copy(boatPos); petals.visible = P.petals > 0.02 && (level >= 2 || QUALITY === 'low');
   petals.material.uniforms.light.value.copy(P.hemiSky).multiplyScalar(0.42 * P.hemiInt).add(tmpC.copy(P.dirColor).multiplyScalar(0.12 * P.dirInt));
   flowers.material.uniforms.light.value.copy(petals.material.uniforms.light.value).multiplyScalar(0.85);
   lilies.userData.blooms.material.color.setRGB(0.75 + 0.6 * P.lanternGlow, 0.6 + 0.4 * P.lanternGlow, 0.62 + 0.35 * P.lanternGlow);
   motes.material.uniforms.color.value.copy(P.motes).multiplyScalar(0.6 + P.lanternGlow * 1.4);
-  motes.material.uniforms.opacity.value = 0.45 + 0.55 * P.blend;
+  motes.material.uniforms.opacity.value = 0.18 + 0.82 * P.blend;
   motes.material.uniforms.center.value.copy(boatPos);
   skyL.material.uniforms.opacity.value = P.blend; skyL.material.uniforms.center.value.copy(boatPos);
   skyL.visible = P.blend > 0.02;
@@ -435,10 +449,12 @@ function frame() {
   let yaw = heading + look.yaw, dist = 8.2, height = 3.1 + look.pitch * 6;
   if (ST.mode === 'title') { yaw = heading + 0.9 + Math.sin(time * 0.08) * 0.35; dist = 10.5; height = 2.6; }
   const portrait = innerHeight > innerWidth; if (portrait) { dist += 1.8; height += 0.6; }
+  if (CAM) { yaw = heading + CAM[2]; dist = CAM[0]; height = CAM[1]; }
   camPos.set(Math.sin(yaw) * dist, height, Math.cos(yaw) * dist).add(boatPos);
   camPos.y += Math.sin(time * 1.35) * 0.06;
   // keep camera above terrain
   camLook.set(boatPos.x, 1.3, boatPos.z).addScaledVector(tmpV.set(-Math.sin(heading), 0, -Math.cos(heading)), 4.0);
+  if (CAM) camLook.set(boatPos.x, 0.0, boatPos.z).addScaledVector(tmpV, CAM[3] || 0);
   if (!camInit) { camera.position.copy(camPos); camInit = true; }
   camera.position.lerp(camPos, Math.min(1, dt * 2.5));
   camera.lookAt(camLook);
