@@ -6,12 +6,12 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
-import { PU } from './paint.js?v=3';
-import * as W from './world.js?v=3';
-import { Boat } from './boat.js?v=3';
-import { ZONES, zoneParamsAt } from './zones.js?v=3';
-import { DreamAudio } from './audio.js?v=3';
-import { LANGS, detectLang, setLang, getLang, t } from './i18n.js?v=3';
+import { PU } from './paint.js?v=4';
+import * as W from './world.js?v=4';
+import { Boat } from './boat.js?v=4';
+import { ZONES, zoneParamsAt } from './zones.js?v=4';
+import { DreamAudio } from './audio.js?v=4';
+import { LANGS, detectLang, setLang, getLang, t } from './i18n.js?v=4';
 
 const qs = new URLSearchParams(location.search);
 const SHOT = qs.has('shot');
@@ -47,6 +47,10 @@ const sky = W.makeSky(); scene.add(sky);
 const reflScale = QUALITY === 'low' ? 0.35 : 0.5;
 const reflSize = () => new THREE.Vector2(Math.max(256, Math.floor(innerWidth * pixelRatio * reflScale)), Math.max(256, Math.floor(innerHeight * pixelRatio * reflScale)));
 const water = W.makeWater(reflSize(), hmap); scene.add(water);
+{ // no star specks in the reflection: stars are switched off while the mirror camera renders
+  const orb = water.onBeforeRender.bind(water);
+  water.onBeforeRender = (...a) => { const u = sky.material.uniforms.stars, v = u.value; u.value = 0; orb(...a); u.value = v; };
+}
 scene.add(W.makeTrees(path, QUALITY));
 const reedsGrp = W.makeReeds(path, shared, QUALITY); scene.add(reedsGrp);
 const flowers = W.makeFlowers(path, QUALITY, shared); scene.add(flowers);
@@ -87,7 +91,6 @@ const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.55, 1.35);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 const fxaa = new ShaderPass(FXAAShader);
-composer.addPass(fxaa);
 // Final painterly pass: Kuwahara-style brush smoothing (high), soft god rays, colour grade,
 // watercolour edge darkening, paper/canvas grain, vignette.
 const grade = new ShaderPass({
@@ -115,19 +118,20 @@ const grade = new ShaderPass({
       m0 /= 9.0; m1 /= 9.0; m2 /= 9.0; m3 /= 9.0;
       vec3 v0 = s0 / 9.0 - m0*m0, v1 = s1 / 9.0 - m1*m1, v2 = s2 / 9.0 - m2*m2, v3 = s3 / 9.0 - m3*m3;
       float a0 = v0.r+v0.g+v0.b, a1 = v1.r+v1.g+v1.b, a2 = v2.r+v2.g+v2.b, a3 = v3.r+v3.g+v3.b;
-      vec3 r = m0; float best = a0;
-      if (a1 < best) { best = a1; r = m1; } if (a2 < best) { best = a2; r = m2; } if (a3 < best) { best = a3; r = m3; }
+      // generalized (soft-weighted) Kuwahara: blends sectors by smoothness instead of hard switching -> no crawling edges
+      vec4 wts = 1.0 / (vec4(a0, a1, a2, a3) * 220.0 + 0.02); wts = wts * wts;
+      vec3 r = (m0 * wts.x + m1 * wts.y + m2 * wts.z + m3 * wts.w) / (wts.x + wts.y + wts.z + wts.w);
       return r;
     }
     void main(){
       vec2 px = 1.0 / res;
       vec2 q = vUv * res / 6.0;
       vec2 w = vec2(n2(q * 0.35), n2(q * 0.35 + 7.3)) - 0.5;
-      vec2 uv = vUv + w * px * 2.0 * brush;
+      vec2 uv = vUv + w * px * 1.2 * brush;
       vec3 c; float edgeE = 0.0; vec3 lw = vec3(0.299, 0.587, 0.114);
       if (kuw > 0.5) {
         vec3 k = kuwahara(uv, px * 0.9 * brush);
-        c = mix(T(uv), k, 0.82);
+        c = mix(T(uv), k, 0.75);
         if (edges > 0.5) edgeE = abs(dot(T(vUv + vec2(px.x * 1.5, 0.0)), lw) - dot(T(vUv - vec2(px.x * 1.5, 0.0)), lw))
                               + abs(dot(T(vUv + vec2(0.0, px.y * 1.5)), lw) - dot(T(vUv - vec2(0.0, px.y * 1.5)), lw));
       } else if (edges > 0.5) {
@@ -139,7 +143,8 @@ const grade = new ShaderPass({
         vec3 mA = (c0 + a1 + a2) / 3.0, mB = (c0 + b1 + b2) / 3.0;
         vec3 vA = (a1 - mA) * (a1 - mA) + (a2 - mA) * (a2 - mA) + (c0 - mA) * (c0 - mA);
         vec3 vB = (b1 - mB) * (b1 - mB) + (b2 - mB) * (b2 - mB) + (c0 - mB) * (c0 - mB);
-        c = mix(c0, (vA.r + vA.g + vA.b) < (vB.r + vB.g + vB.b) ? mA : mB, 0.85);
+        float wA = 1.0 / ((vA.r + vA.g + vA.b) * 300.0 + 0.02), wB = 1.0 / ((vB.r + vB.g + vB.b) * 300.0 + 0.02); wA *= wA; wB *= wB;
+        c = mix(c0, (mA * wA + mB * wB) / (wA + wB), 0.7);
         edgeE = (abs(dot(a1, lw) - dot(a2, lw)) + abs(dot(b1, lw) - dot(b2, lw))) * 1.2;
       } else {
         c = T(uv) * 0.7 + 0.3 * T(vUv + w.yx * px * 3.5);
@@ -148,8 +153,7 @@ const grade = new ShaderPass({
       if (rays > 0.001 && raySteps > 0.5) {
         vec2 dir = sunUV - vUv; float dl = length(dir);
         vec2 stp = dir / raySteps * 0.85;
-        float jit = h(vUv * res + fract(time));
-        vec2 sp = vUv + stp * jit;
+        vec2 sp = vUv + stp * 0.5;
         vec3 acc = vec3(0.0); float wsum = 0.0, dec = 1.0;
         for (int i = 0; i < 24; i++) {
           if (float(i) >= raySteps) break;
@@ -167,21 +171,20 @@ const grade = new ShaderPass({
       c = mix(c, c * c * (3.0 - 2.0 * c), 0.25);
       c = (c - 0.5) * contrast + 0.5;
       // watercolour edge darkening (pigment pooling at value changes)
-      c *= 1.0 - 0.16 * smoothstep(0.04, 0.25, edgeE);
+      c *= 1.0 - 0.05 * smoothstep(0.12, 0.45, edgeE); // very faint pigment pooling only at strong value edges
       // levels: set a gentle black point so silhouettes read on phones; warm the highlights
       c = max(c - blackPt, 0.0) / (1.0 - blackPt);
-      // paper / canvas grain: woven weave + fibres + fine grain
-      vec2 fp = vUv * res;
-      float weave = (sin(fp.x * 1.6) * sin(fp.y * 1.6)) * 0.5 + 0.5;
-      float fib = n2(fp * vec2(0.08, 0.6)) * 0.5 + n2(fp * vec2(0.6, 0.07)) * 0.5;
-      float grain = (n2(fp * 0.5) - 0.5) * 0.02 + (fib - 0.5) * 0.035 + (weave - 0.5) * 0.012 + (h(fp + fract(time)) - 0.5) * 0.012;
-      c += grain * (0.6 + 0.6 * (1.0 - l));
+      // paper: very soft, static, low-frequency tooth (in CSS pixels, so it never turns into per-pixel grain on high-DPR phones)
+      vec2 fp = vUv * res / brush;
+      float paper = (n2(fp * 0.045) - 0.5) * 0.6 + (n2(fp * 0.12 + 7.0) - 0.5) * 0.4;
+      c += paper * 0.014 * (0.5 + 0.5 * (1.0 - l));
       vec2 d = vUv - 0.5; d.x *= res.x / res.y * 0.8;
       c *= 1.0 - vig * smoothstep(0.25, 0.95, length(d));
       gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
     }`,
 });
 composer.addPass(grade);
+composer.addPass(fxaa);
 
 // ---------- quality levels (3 high · 2 mid · 1 low); adaptive drops expensive effects first ----------
 let level = QUALITY === 'high' ? 3 : QUALITY === 'mid' ? 2 : 1;
@@ -407,7 +410,7 @@ function frame() {
   flowers.material.uniforms.light.value.copy(petals.material.uniforms.light.value).multiplyScalar(0.85);
   lilies.userData.blooms.material.color.setRGB(0.75 + 0.6 * P.lanternGlow, 0.6 + 0.4 * P.lanternGlow, 0.62 + 0.35 * P.lanternGlow);
   motes.material.uniforms.color.value.copy(P.motes).multiplyScalar(0.6 + P.lanternGlow * 1.4);
-  motes.material.uniforms.opacity.value = 0.18 + 0.82 * P.blend;
+  motes.material.uniforms.opacity.value = P.blend * P.blend;
   motes.material.uniforms.center.value.copy(boatPos);
   skyL.material.uniforms.opacity.value = P.blend; skyL.material.uniforms.center.value.copy(boatPos);
   skyL.visible = P.blend > 0.02;

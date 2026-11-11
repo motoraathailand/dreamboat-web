@@ -21,3 +21,11 @@ Provider: MOTOR AA.
   (same hull formulas as boat.js, using the boat's live world matrix, so it holds during bobbing/rowing). Real slatted floorboards follow the inner hull; boat floats a little higher.
 - Clarity: HDR bloom threshold (sky no longer blooms), black point + contrast per zone, mobile "brush-lite" painterly pass (5 taps), sharper sun-glitter path, birds, calmer petals/motes, livelier rower (look-around, breathing, nod).
 - Debug: `?cam=dist,height,yaw` fixed camera, `?bob=3` strong bobbing.
+
+## v4 — calm image pass (anti-shimmer) + graphics round 3
+- Noise sources removed: hashed sun-glitter cells, sharp Blinn specular on high-freq normals, per-frame film grain / canvas weave, jittered god-ray sampling, edge-outline darkening, hard sector switching in Kuwahara / brush filter, star specks in the reflection, fast-flickering sub-pixel fireflies, sky dither.
+- Sun path is now an analytic soft band with slow low-frequency shimmer; specular uses a low-frequency normal only.
+- Kuwahara / brush-lite use soft inverse-variance weights (no popping); brush noise fades with distance (LOD).
+- FXAA last in the chain at mid/high tier; bloom HDR threshold 1.35 so no specks bloom.
+- Graphics: low cloud band in the sunset sky, distant forest silhouette layer with atmospheric fade, softer reeds, calmer water ripples, blurred soft reflections, warmer boat readability.
+- Measured on 412x915@2.6 (mid): water high-freq energy 1.55 → 0.77, frame-to-frame 2.03 → 1.03.

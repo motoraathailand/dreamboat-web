@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { Reflector } from 'three/addons/objects/Reflector.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { paint, PU } from './paint.js?v=3';
+import { paint, PU } from './paint.js?v=4';
 
 // ---------- small deterministic RNG ----------
 export function rng(seed = 1) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
@@ -119,16 +119,20 @@ export function makeHeightTex(path, quality) {
 export function makeMountains(path) {
   const group = new THREE.Group(); group.name = 'mountains';
   const cz = -path.L / 2; const layers = [];
-  const LAYERS = [{ r: 360, h: 55, seed: 1 }, { r: 470, h: 95, seed: 5 }, { r: 600, h: 150, seed: 9 }];
+  const LAYERS = [{ r: 300, h: 10, seed: 3, forest: true }, { r: 360, h: 55, seed: 1 }, { r: 470, h: 95, seed: 5 }, { r: 600, h: 150, seed: 9 }];
   LAYERS.forEach((Ly, li) => {
-    const seg = 360, pos = [], vv = [], idx = [];
+    const seg = Ly.forest ? 1100 : 360, pos = [], vv = [], idx = [];
     for (let i = 0; i <= seg; i++) {
       const a = (i / seg) * Math.PI * 2;
       const ca = Math.cos(a), sa = Math.sin(a);
       // ridge profile: big soft swells + finer painted ridgelines
       let h = 0, amp = 1, fq = 1;
       for (let o = 0; o < 6; o++) { h += amp * (vnoise(ca * 2.6 * fq + Ly.seed * 7.1, sa * 2.6 * fq + Ly.seed) - 0.35); amp *= 0.55; fq *= 2.2; }
-      h = Math.max(0.12, h) * Ly.h + 8;
+      if (Ly.forest) {
+        // rounded crowns of a far forest edge riding on a gentle swell
+        const crowns = Math.pow(Math.abs(Math.sin(a * 170 + vnoise(ca * 9, sa * 9) * 3.0)), 0.6) * (0.6 + 0.4 * vnoise(ca * 30, sa * 30));
+        h = 14 + h * 18 + crowns * Ly.h + (vnoise(ca * 4 + 2, sa * 4) > 0.62 ? 8 * crowns : 0);
+      } else h = Math.max(0.12, h) * Ly.h + 8;
       const x = ca * Ly.r * 0.78, z = cz + sa * Ly.r * 1.3;
       pos.push(x, -20, z, x, h, z); vv.push(0, 1);
       if (i < seg) { const k = i * 2; idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); }
@@ -146,7 +150,7 @@ export function makeMountains(path) {
         float n2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f); return mix(mix(h21(i),h21(i+vec2(1,0)),f.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x), f.y); }
         void main(){
           float ang = atan(vW.z, vW.x);
-          float strokes = n2(vec2(ang * 60.0, vW.y * 0.08)) * 0.6 + n2(vec2(ang * 180.0, vW.y * 0.25)) * 0.4;
+          float strokes = n2(vec2(ang * 24.0, vW.y * 0.05)) * 0.6 + n2(vec2(ang * 70.0, vW.y * 0.12)) * 0.4;
           float t = smoothstep(0.0, 0.85, vV + (strokes - 0.5) * 0.18);
           vec3 c = mix(haze, col, t * 0.85);
           vec3 dir = normalize(vec3(vW.x, 0.0, vW.z - ${(-path.L / 2).toFixed(1)}));
@@ -206,15 +210,22 @@ export function makeSky() {
         float edge = smoothstep(0.0, 0.35, c) * (1.0 - smoothstep(0.35, 0.9, c));
         cc += sunColor * (pow(sd, 10.0) * 0.6 + edge * pow(sd, 4.0) * 0.9) * sunGlow;
         col = mix(col, cc, c * 0.86);
+        // low band of big soft sunset clouds, warm undersides lit by the sun below
+        vec2 q2 = vec2(cp.x * 0.16 + time * 0.002 + 20.0, cp.y * 0.55);
+        float c2 = fbm(q2 + wv * 0.6);
+        c2 = smoothstep(0.5, 0.82, c2) * smoothstep(0.01, 0.06, y) * (1.0 - smoothstep(0.16, 0.34, y)) * (1.0 - 0.92 * pow(sd, 24.0));
+        float under = smoothstep(0.25, 0.0, y - 0.02) * 0.5 + 0.5 * pow(sd, 2.0);
+        vec3 cc2 = mix(cloudShadow * 0.75, cloudColor, under * 0.8) + sunColor * pow(sd, 6.0) * 0.6 * sunGlow;
+        col = mix(col, cc2, c2 * 0.6);
         // sun disc (soft painted edge)
         float disc = smoothstep(0.9990 - 0.0004 * sunSize, 0.99965, sd) * sunSize;
         col += sunColor * disc * 3.2 * (1.0 - c * 0.65);
         if (stars > 0.01 && y > 0.05) {
-          vec2 sp = d.xz / (y + 0.3) * 160.0;
+          vec2 sp = d.xz / (y + 0.3) * 110.0;
           vec2 id = floor(sp); float r = h21(id);
-          float tw = 0.6 + 0.4 * sin(time * (1.0 + r * 3.0) + r * 40.0);
-          float s = step(0.985, r) * smoothstep(0.42, 0.0, length(fract(sp) - 0.5)) * tw;
-          col += vec3(1.0, 0.92, 0.8) * s * stars * smoothstep(0.05, 0.3, y) * (1.0 - c);
+          float tw = 0.85 + 0.15 * sin(time * (0.3 + r * 0.6) + r * 40.0);
+          float s = step(0.991, r) * smoothstep(0.5, 0.05, length(fract(sp) - 0.5)) * tw;
+          col += vec3(1.0, 0.92, 0.8) * s * 0.7 * stars * smoothstep(0.05, 0.3, y) * (1.0 - c);
           // faint milky band
           float band = exp(-pow(dot(d, normalize(vec3(0.6, 0.5, 0.3))) * 3.2, 2.0)) * fbm(d.xz * 6.0);
           col += vec3(0.55, 0.45, 0.8) * band * 0.12 * stars * (1.0 - c);
@@ -227,7 +238,6 @@ export function makeSky() {
           col = mix(col, mc * 2.2, disc2 * moon);
           col += vec3(0.7, 0.65, 0.95) * (pow(max(m, 0.0), 60.0) * 0.35 + pow(max(m, 0.0), 8.0) * 0.08) * moon;
         }
-        col += (h21(gl_FragCoord.xy) - 0.5) / 255.0; // dither
         gl_FragColor = vec4(col, 1.0);
       }`,
   });
@@ -293,13 +303,15 @@ export function makeWater(texSize, hmap) {
         g += wave(p, normalize(vec2(0.3, 1.0)), 0.55, 1.1, 0.06);
         g += wave(p, normalize(vec2(-0.8, 0.6)), 0.9, 1.6, 0.035);
         g += wave(p, normalize(vec2(0.9, 0.2)), 1.7, 2.3, 0.018);
-        g += wave(p, normalize(vec2(-0.2, -1.0)), 2.9, 3.1, 0.009);
+        g += wave(p, normalize(vec2(-0.2, -1.0)), 2.9, 3.1, 0.009) * calm;
+        vec2 gLow = g; // smooth normal source for specular (no fine detail -> no specular aliasing)
         float nA = n2(p * 0.35 + time * 0.05), nB = n2(p * 0.35 + vec2(3.1, 7.7) - time * 0.04);
         g += (vec2(nA, nB) - 0.5) * 0.08;
         // fine "normal map" ripples (fade with distance to avoid shimmer)
         if (rq > 0.5) {
-          g += dn(p * 1.4 + time * vec2(0.16, 0.07)) * 0.022 * calm;
-          g += dn(p * 3.3 - time * vec2(0.09, 0.21)) * 0.012 * calm;
+          float near2 = calm * calm;
+          g += dn(p * 0.75 + time * vec2(0.10, 0.05)) * 0.018 * near2;
+          g += dn(p * 1.6 - time * vec2(0.06, 0.12)) * 0.008 * near2;
         }
         for (int i = 0; i < ${RIPPLES}; i++) {
           vec4 r = ripples[i]; float age = time - r.z;
@@ -327,7 +339,7 @@ export function makeWater(texSize, hmap) {
         vec3 refl = texture2DProj(tDiffuse, uv).rgb;
         if (rq > 0.5) {
           // soft, vertically stretched reflection blur
-          float b = (0.0035 + length(g) * 0.012) * uv.w;
+          float b = (0.0055 + length(g) * 0.01) * uv.w;
           refl = refl * 0.32
             + texture2DProj(tDiffuse, uv + vec4(0.0,  b * 1.8, 0.0, 0.0)).rgb * 0.19
             + texture2DProj(tDiffuse, uv + vec4(0.0, -b * 1.8, 0.0, 0.0)).rgb * 0.19
@@ -343,23 +355,23 @@ export function makeWater(texSize, hmap) {
         // soft contact shadow under the hull
         float bs = exp(-(lat * lat / 0.7 + along * along / 5.0));
         col *= 1.0 - 0.38 * bs;
-        // sun highlight + glitter
-        vec3 H = normalize(sunDir + V);
-        float nh = max(dot(N, H), 0.0);
+        // sun path: a soft, smooth band with gentle low-frequency shimmer (no per-pixel sparkle)
+        vec3 Ns = normalize(vec3(-gLow.x * 0.6, 1.0, -gLow.y * 0.6));
+        vec3 Rv = reflect(-V, Ns);
+        float sd = max(dot(Rv, sunDir), 0.0);
         float sunUp = smoothstep(-0.05, 0.05, sunDir.y);
-        float spec = pow(nh, 220.0) * 2.4 + pow(nh, 30.0) * 0.12;
-        if (rq > 0.5) {
-          vec2 gp = p * 7.0 + g * 14.0; vec2 gi = floor(gp); float gr = h21(gi);
-          float tw = 0.5 + 0.5 * sin(time * (2.0 + gr * 6.0) + gr * 40.0);
-          float sp = step(0.8, gr) * tw * smoothstep(0.35, 0.0, length(fract(gp) - 0.5));
-          spec += sp * (pow(nh, 28.0) * 1.2 + pow(nh, 90.0) * 2.4) * calm;
-        }
-        col += sunColor * spec * sunUp;
+        float shimmer = 0.75 + 0.25 * n2(p * vec2(0.18, 0.6) + vec2(0.0, time * 0.25));
+        // narrow across, long toward the viewer: a painted column of light rather than a dot
+        float hz = max(dot(normalize(Rv.xz + 1e-4), normalize(sunDir.xz + 1e-4)), 0.0);
+        float vert = (0.35 + 0.65 * pow(sd, 3.0)) * smoothstep(0.0, 0.4, -Rv.y + 0.6);
+        float band = (pow(hz, 90.0) * 0.28 + pow(hz, 400.0) * 0.5) * vert;
+        float path = band + pow(sd, 80.0) * 0.4;
+        col += sunColor * min(path * shimmer, 1.1) * sunUp;
         // shoreline foam: thin broken line that laps slowly
         float fn = n2(p * 0.9 + time * 0.08) * 0.6 + n2(p * 2.7 - time * 0.11) * 0.4;
-        float lap = 0.5 + 0.5 * sin(depth * 22.0 - time * 1.3 + fn * 6.0);
+        float lap = 0.5 + 0.5 * sin(depth * 12.0 - time * 0.9 + fn * 4.0);
         float foam = smoothstep(0.55, 0.05, depth) * smoothstep(0.35, 0.75, fn * 0.6 + lap * 0.55) * (1.0 - smoothstep(0.0, 0.03, -th - 0.55));
-        col = mix(col, foamCol, foam * 0.5);
+        col = mix(col, foamCol, foam * 0.32);
         float alpha = smoothstep(0.0, 0.22, depth);
         gl_FragColor = vec4(col, alpha);
         #include <tonemapping_fragment>
@@ -548,7 +560,7 @@ export function makeReeds(path, uniforms, quality) {
   const group = new THREE.Group(); group.name = 'reeds';
   const lowQ = quality === 'low';
   const reedMat = swayMaterial(uniforms, { freq: 2.0, amt: 0.1, trans: 0.7, rim: 0.25 });
-  const reedGeo = bladeGeo(4, 0.07, 0.35, '#3e3a22', false);
+  const reedGeo = bladeGeo(4, 0.085, 0.35, '#4a4428', false);
   const tailGeo = bladeGeo(4, 0.03, 0.05, '#3e3a22', true);
   const grassGeo = bladeGeo(3, 0.06, 0.25, '#2e3a1a', false);
   const N = lowQ ? 1800 : 2800;
@@ -845,10 +857,12 @@ export function makePoints(count, spread, kind, uniforms) {
         vec2 hs = spread; vec2 wp = mod(p.xz - center.xz + hs, 2.0 * hs) - hs + center.xz;
         vec4 mv = viewMatrix * vec4(wp.x, p.y, wp.y, 1.0);
         gl_Position = projectionMatrix * mv;
-        float tw = 0.55 + 0.45 * sin(time * (1.5 + seed * 2.5) + seed * 60.0);
+        float tw = 0.65 + 0.35 * sin(time * (0.5 + seed * 0.7) + seed * 60.0);
         float near = smoothstep(3.0, 11.0, -mv.z);
         vA = (rise > 0.5 ? 0.9 : tw * tw) * near;
-        gl_PointSize = min(size * pr * (60.0 / -mv.z) * (0.6 + seed * 0.8), 12.0 * pr);
+        float ps = size * pr * (60.0 / -mv.z) * (0.6 + seed * 0.8);
+        vA *= clamp(ps / (4.0 * pr), 0.0, 1.0);
+        gl_PointSize = clamp(ps, 4.0 * pr, 12.0 * pr);
       }`,
     fragmentShader: `uniform sampler2D map; uniform vec3 color; uniform float opacity; varying float vA;
       void main(){ vec4 t = texture2D(map, gl_PointCoord); gl_FragColor = vec4(color * t.rgb, t.a * vA * opacity); }`,

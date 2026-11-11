@@ -71,7 +71,8 @@ export function paint(mat, o = {}) {
       #ifdef USE_FOG
       {
         vec3 wp = vFogWorld;
-        float pn = pn_n(wp * ${f(freq)}) * 0.6 + pn_n(wp * ${f(freq * 3.3)} + 4.1) * 0.4;
+        float lodP = clamp(1.0 - vFogDepth * ${f(freq)} / 30.0, 0.0, 1.0); // fade fine brush noise with distance (no shimmer)
+        float pn = 0.5 + (pn_n(wp * ${f(freq)}) - 0.5) * (0.35 + 0.65 * lodP) * 1.2 + (pn_n(wp * ${f(freq * 3.3)} + 4.1) - 0.5) * 0.5 * lodP * lodP;
         outgoingLight *= ${f(1 - amt)} + ${f(2 * amt)} * pn;
         float lumP = dot(outgoingLight, vec3(0.299, 0.587, 0.114));
         outgoingLight = mix(outgoingLight * pShadow, outgoingLight, smoothstep(0.02, 0.45, lumP));
@@ -79,7 +80,7 @@ export function paint(mat, o = {}) {
         float backP = pow(max(dot(vdP, pSunDir), 0.0), 5.0);
         outgoingLight += diffuseColor.rgb * pSunCol * backP * ${f(trans)};
         float rimP = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 3.0);
-        outgoingLight += pSunCol * rimP * ${f(rim)} * (0.08 + 0.92 * backP);
+        outgoingLight += pSunCol * rimP * ${f(rim)} * 0.7 * backP;
         if (!gl_FrontFacing) outgoingLight *= ${f(1 - inner)};
       }
       #endif
