@@ -1,0 +1,333 @@
+// DREAM BOAT — first playable sample. © MOTOR AA
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import * as W from './world.js';
+import { Boat } from './boat.js';
+import { ZONES, zoneParamsAt } from './zones.js';
+import { DreamAudio } from './audio.js';
+import { LANGS, detectLang, setLang, getLang, t } from './i18n.js';
+
+const qs = new URLSearchParams(location.search);
+const SHOT = qs.has('shot');
+const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+const isMobile = isTouch && Math.min(screen.width, screen.height) < 900;
+const QUALITY = qs.get('q') || (isMobile ? 'mid' : 'high');
+
+// ---------- renderer ----------
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', preserveDrawingBuffer: SHOT });
+const maxPR = QUALITY === 'low' ? 0.85 : QUALITY === 'mid' ? Math.min(devicePixelRatio, 1.5) : Math.min(devicePixelRatio, 2);
+let pixelRatio = QUALITY === 'high' ? Math.min(devicePixelRatio, 1.5) : Math.min(maxPR, 1.25);
+renderer.setPixelRatio(pixelRatio);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0xeda27c, 35, 380);
+const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 2500);
+
+const shared = { time: { value: 0 }, pr: { value: pixelRatio } };
+
+// ---------- world ----------
+const path = W.makePath();
+scene.add(W.makeTerrain(path));
+const mountains = W.makeMountains(path); scene.add(mountains);
+const sky = W.makeSky(); scene.add(sky);
+const reflSize = () => new THREE.Vector2(Math.max(256, Math.floor(innerWidth * pixelRatio * 0.5)), Math.max(256, Math.floor(innerHeight * pixelRatio * 0.5)));
+const water = W.makeWater(reflSize()); scene.add(water);
+scene.add(W.makeTrees(path));
+scene.add(W.makeReeds(path, shared));
+scene.add(W.makeRocks(path));
+scene.add(W.makeHut(path, 0.2, 1), W.makeHut(path, 0.34, -1));
+const BRIDGE_U = 0.72;
+const bridge = W.makeBridge(path, BRIDGE_U); scene.add(bridge);
+const bridgeLights = [];
+for (const x of [-6, 6]) { const l = new THREE.PointLight('#ff9850', 0, 26, 1.5); l.position.set(x, 9, 0); bridge.add(l); bridgeLights.push(l); }
+const floating = W.makeFloatingLanterns(path, 0.46, 1.0, QUALITY === 'low' ? 70 : 110); scene.add(floating.paper, floating.base);
+const paperColors = []; for (let i = 0; i < floating.items.length; i++) { const c = new THREE.Color(); floating.paper.getColorAt(i, c); paperColors.push(c); }
+const motes = W.makePoints(QUALITY === 'low' ? 140 : 260, { x: 45, y0: 0.6, y1: 9, z: 45 }, 'motes', shared); scene.add(motes);
+const skyL = W.makePoints(70, { x: 220, y0: 10, y1: 120, z: 220 }, 'sky', shared); scene.add(skyL);
+skyL.material.uniforms.color.value.set(1.6, 0.75, 0.3);
+
+const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 2); scene.add(sun, sun.target);
+
+const boat = new Boat(); scene.add(boat.root);
+
+// ---------- post ----------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.65, 0.78);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+const grade = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, sat: { value: 1.08 }, lift: { value: new THREE.Color() }, gain: { value: new THREE.Color(1, 1, 1) }, vig: { value: 0.4 }, res: { value: new THREE.Vector2(1, 1) }, time: { value: 0 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float sat, vig, time; uniform vec3 lift, gain; uniform vec2 res; varying vec2 vUv;
+    float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233)))*43758.5453); }
+    float n2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f); return mix(mix(h(i),h(i+vec2(1,0)),f.x), mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x), f.y); }
+    void main(){
+      // subtle brush-stroke warp: offsets sampling along a slow noise field
+      vec2 px = 1.0 / res;
+      vec2 q = vUv * res / 6.0;
+      vec2 w = vec2(n2(q * 0.35), n2(q * 0.35 + 7.3)) - 0.5;
+      vec3 c = texture2D(tDiffuse, vUv + w * px * 2.2).rgb;
+      c = c * 0.7 + 0.3 * (texture2D(tDiffuse, vUv + w.yx * px * 3.5).rgb);
+      float l = dot(c, vec3(0.299, 0.587, 0.114));
+      c = mix(vec3(l), c, sat);
+      // split toning: shadows -> lift tint, highlights -> gain tint
+      c = mix(lift + c * (1.0 - lift), c * gain, smoothstep(0.0, 1.0, l));
+      // soft S-curve
+      c = mix(c, c * c * (3.0 - 2.0 * c), 0.25);
+      // canvas texture
+      float canvasT = (n2(vUv * res * 0.5) - 0.5) * 0.025 + (h(vUv * res + fract(time)) - 0.5) * 0.015;
+      c += canvasT;
+      vec2 d = vUv - 0.5; d.x *= res.x / res.y * 0.8;
+      c *= 1.0 - vig * smoothstep(0.25, 0.95, length(d));
+      gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+    }`,
+});
+composer.addPass(grade);
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setPixelRatio(pixelRatio); renderer.setSize(w, h, false);
+  composer.setPixelRatio(pixelRatio); composer.setSize(w, h);
+  camera.aspect = w / h; camera.fov = w < h ? 68 : 56; camera.updateProjectionMatrix();
+  const rs = reflSize(); water.getRenderTarget().setSize(rs.x, rs.y);
+  bloom.resolution.set(w * pixelRatio * 0.5, h * pixelRatio * 0.5);
+  grade.uniforms.res.value.set(w * pixelRatio, h * pixelRatio);
+  shared.pr.value = pixelRatio;
+}
+addEventListener('resize', resize); resize();
+
+// ---------- state ----------
+const ST = { mode: 'title', s: 0, speed: 0, rowing: false, ended: false, endTimer: 0, zoneShown: -1 };
+const BASE = 2.6, ROW_MAX = 7.0;
+let startU = 0;
+if (qs.has('zone')) startU = qs.get('zone') === '2' ? 0.6 : 0.03;
+if (qs.has('u')) startU = parseFloat(qs.get('u')) || 0;
+ST.s = startU * path.L;
+
+const audio = new DreamAudio();
+try { audio.muted = localStorage.getItem('dreamboat.muted') === '1'; } catch (e) {}
+
+// ---------- input ----------
+const look = { yaw: 0, pitch: 0, tYaw: 0, tPitch: 0, idle: 0 };
+const pointers = new Map(); const keys = new Set();
+let rowBtnHeld = false;
+const rowBtn = document.getElementById('rowBtn');
+function playing() { return ST.mode === 'play'; }
+canvas.addEventListener('pointerdown', (e) => { if (!playing()) return; pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, drag: false, t: performance.now() }); try { canvas.setPointerCapture(e.pointerId); } catch (_) {} });
+canvas.addEventListener('pointermove', (e) => {
+  const p = pointers.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
+  if (!p.drag && Math.hypot(p.x - p.sx, p.y - p.sy) > 10) p.drag = true;
+  if (p.drag) { look.tYaw -= dx * 0.005; look.tPitch -= dy * 0.003; look.idle = 0; }
+});
+const endPtr = (e) => pointers.delete(e.pointerId);
+canvas.addEventListener('pointerup', endPtr); canvas.addEventListener('pointercancel', endPtr);
+rowBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); rowBtnHeld = true; rowBtn.classList.add('active'); try { rowBtn.setPointerCapture(e.pointerId); } catch (_) {} });
+const rowUp = () => { rowBtnHeld = false; rowBtn.classList.remove('active'); };
+rowBtn.addEventListener('pointerup', rowUp); rowBtn.addEventListener('pointercancel', rowUp); rowBtn.addEventListener('lostpointercapture', rowUp);
+addEventListener('keydown', (e) => { if (['Space', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'ArrowDown'].includes(e.code)) e.preventDefault(); keys.add(e.code); if (e.code === 'KeyM') toggleMute(); });
+addEventListener('keyup', (e) => keys.delete(e.code));
+addEventListener('blur', () => { keys.clear(); pointers.clear(); rowUp(); });
+function isRowing() {
+  if (!playing() || ST.ended) return false;
+  if (rowBtnHeld || keys.has('Space') || keys.has('KeyW') || keys.has('ArrowUp')) return true;
+  const now = performance.now();
+  for (const p of pointers.values()) if (!p.drag && now - p.t > 140) return true;
+  return false;
+}
+
+// ---------- UI ----------
+const $ = (id) => document.getElementById(id);
+const hud = $('hud'), hint = $('hint'), zt = $('zoneTitle'), fade = $('fade');
+function refreshTexts() {
+  $('langCode').textContent = getLang().toUpperCase();
+  const muted = audio.muted; $('muteLabel').textContent = t(muted ? 'unmute' : 'mute');
+  $('muteBtn').setAttribute('aria-label', t(muted ? 'unmute' : 'mute'));
+  $('icSound').innerHTML = muted ? '<path d="M4 10v4h4l5 4V6L8 10z"/><path d="M17 9l5 6M22 9l-5 6"/>' : '<path d="M4 10v4h4l5 4V6L8 10z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>';
+  const h = isTouch ? t('hintTouch') : t('hintKeys');
+  hint.textContent = h; $('startHint').textContent = h;
+  if (ST.zoneShown >= 0) setZoneTitle(ST.zoneShown, false);
+  const menu = $('langMenu'); menu.innerHTML = '';
+  for (const L of LANGS) { const b = document.createElement('button'); b.textContent = L.label; b.className = L.code === getLang() ? 'on' : ''; b.onclick = () => { setLang(L.code); refreshTexts(); menu.classList.add('hidden'); }; menu.appendChild(b); }
+}
+setLang(qs.get('lang') || detectLang(), !!qs.get('lang') && false);
+refreshTexts();
+$('langBtn').onclick = (e) => { e.stopPropagation(); $('langMenu').classList.toggle('hidden'); };
+document.addEventListener('pointerdown', (e) => { if (!$('langMenu').contains(e.target) && e.target.closest('#langBtn') == null) $('langMenu').classList.add('hidden'); });
+function toggleMute() { audio.setMuted(!audio.muted); try { localStorage.setItem('dreamboat.muted', audio.muted ? '1' : '0'); } catch (e) {} refreshTexts(); }
+$('muteBtn').onclick = toggleMute;
+// language button also on title screen (hud is visible on title too)
+hud.classList.remove('hidden');
+
+function setZoneTitle(i, show = true) {
+  const z = ZONES[i]; zt.querySelector('.zt-name').textContent = t(z.nameKey); zt.querySelector('.zt-sub').textContent = t(z.subKey);
+  if (show) { zt.classList.add('show'); clearTimeout(setZoneTitle.tm); setZoneTitle.tm = setTimeout(() => zt.classList.remove('show'), SHOT ? 1e9 : 6500); }
+}
+
+function startGame() {
+  audio.start(); audio.setMuted(audio.muted);
+  $('startScreen').classList.add('hidden');
+  ST.mode = 'play'; ST.ended = false; ST.endTimer = 0;
+  rowBtn.classList.remove('hidden'); hint.classList.remove('hidden');
+  setTimeout(() => hint.classList.add('hidden'), 9000);
+  ST.zoneShown = -1;
+}
+$('startBtn').onclick = startGame;
+$('againBtn').onclick = () => {
+  fade.classList.remove('off');
+  setTimeout(() => {
+    ST.s = 0; ST.speed = 0; boatPos.set(0, 0, 0); ripIdx = 0; $('endScreen').classList.add('hidden'); audio.fadeOutEnd(false);
+    camInit = false; startGame(); fade.classList.add('off');
+  }, 2600);
+};
+
+// ---------- ripples ----------
+const ripples = water.material.uniforms.ripples.value; let ripIdx = 0;
+function addRipple(x, z, str) { ripples[ripIdx].set(x, z, shared.time.value, str); ripIdx = (ripIdx + 1) % W.RIPPLES; }
+
+// ---------- adaptive quality ----------
+let fpsAcc = 0, fpsN = 0, fpsT = 0;
+function adapt(dt) {
+  fpsAcc += dt; fpsN++; fpsT += dt;
+  if (fpsT < 2.5) return;
+  const fps = fpsN / fpsAcc; fpsAcc = fpsN = fpsT = 0;
+  if (SHOT) return;
+  if (fps < 42 && pixelRatio > 0.7) { pixelRatio = Math.max(0.7, pixelRatio - 0.15); resize(); }
+  else if (fps < 30 && pixelRatio <= 0.7 && bloom.enabled) { bloom.enabled = false; }
+  else if (fps > 58 && pixelRatio < maxPR) { pixelRatio = Math.min(maxPR, pixelRatio + 0.1); resize(); }
+}
+
+// ---------- main loop ----------
+const clock = new THREE.Clock();
+const boatPos = new THREE.Vector3(), tmpV = new THREE.Vector3(), tmpV2 = new THREE.Vector3(), camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
+let camInit = false, wakeT = 0, lastHeading = 0;
+const P = {};
+const m4 = new THREE.Matrix4(), q4 = new THREE.Quaternion(), s4 = new THREE.Vector3(), p4 = new THREE.Vector3(), e4 = new THREE.Euler();
+
+function frame() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const time = (shared.time.value += dt);
+  adapt(dt);
+
+  // --- motion along path ---
+  const rowing = isRowing();
+  const stroke = boat.update(dt, time, rowing, ST.speed);
+  const target = ST.mode === 'title' ? 0 : ST.ended ? 0 : BASE;
+  ST.speed += (target - ST.speed) * Math.min(1, dt * 0.6);
+  ST.speed += stroke.drive * 9.0 * dt;           // propulsion during each drive phase
+  ST.speed -= Math.max(0, ST.speed - BASE) * 0.55 * dt; // water drag
+  ST.speed = Math.min(ST.speed, ROW_MAX);
+  if (ST.mode !== 'title') ST.s += ST.speed * dt;
+  const uEnd = 0.975;
+  let u = Math.min(ST.s / path.L, 1);
+  if (u > uEnd && !ST.ended && ST.mode === 'play') { ST.ended = true; }
+  if (ST.ended) { ST.endTimer += dt; if (ST.endTimer > 2.5 && $('endScreen').classList.contains('hidden')) { $('endScreen').classList.remove('hidden'); rowBtn.classList.add('hidden'); audio.fadeOutEnd(true); } }
+  u = Math.min(u, 0.995);
+  const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
+  const sway = Math.sin(time * 0.21) * 1.2;
+  boatPos.set(pt.x + tg.z * sway, 0, pt.z - tg.x * sway);
+  const heading = Math.atan2(-tg.x, -tg.z);
+  lastHeading = heading;
+  boat.root.position.copy(boatPos); boat.root.rotation.y = heading;
+
+  if (stroke.caught) {
+    boat.body.updateMatrixWorld(true);
+    for (let i = 0; i < 2; i++) { boat.bladeWorld(i, tmpV); addRipple(tmpV.x, tmpV.z, 1.0); }
+    audio.splash(0.8 + Math.random() * 0.4);
+  }
+  wakeT += dt * ST.speed;
+  if (wakeT > 2.2) { wakeT = 0; tmpV.set(0, 0, 2.3).applyAxisAngle(THREE.Object3D.DEFAULT_UP, heading).add(boatPos); addRipple(tmpV.x, tmpV.z, 0.35); }
+  audio.setRowing(stroke.drive);
+
+  // --- zone palette ---
+  zoneParamsAt(u, P);
+  const su = sky.material.uniforms;
+  su.top.value.copy(P.skyTop); su.mid.value.copy(P.skyMid); su.horizon.value.copy(P.skyHorizon); su.ground.value.copy(P.skyGround);
+  su.cloudColor.value.copy(P.cloudColor); su.cloudShadow.value.copy(P.cloudShadow);
+  // sun direction is relative to the start heading so it sits ahead of the boat
+  su.sunDir.value.copy(P.sunDir); su.sunColor.value.copy(P.sunColor); su.sunSize.value = P.sunSize; su.sunGlow.value = P.sunGlow;
+  su.moon.value = P.moon; su.stars.value = P.stars; su.time.value = time;
+  sky.position.copy(camera.position);
+  scene.fog.color.copy(P.fogColor); scene.fog.near = P.fogNear; scene.fog.far = P.fogFar;
+  hemi.color.copy(P.hemiSky); hemi.groundColor.copy(P.hemiGround); hemi.intensity = P.hemiInt;
+  sun.color.copy(P.dirColor); sun.intensity = P.dirInt;
+  sun.position.copy(P.sunDir).multiplyScalar(100).add(boatPos); sun.position.y = Math.max(sun.position.y, 25 * (1 - P.blend) + 60 * P.blend); sun.target.position.copy(boatPos);
+  const wu = water.material.uniforms;
+  wu.time.value = time; wu.deep.value.copy(P.waterDeep); wu.tint.value.copy(P.waterTint); wu.sunDir.value.copy(P.sunDir); wu.sunColor.value.copy(P.sunColor).multiplyScalar(P.sunGlow);
+  wu.boat.value.set(boatPos.x, boatPos.z, heading, Math.min(1, ST.speed / 4));
+  water.position.set(Math.round(boatPos.x / 10) * 10, 0, Math.round(boatPos.z / 10) * 10);
+  renderer.toneMappingExposure = P.exposure;
+  bloom.strength = P.bloom; grade.uniforms.sat.value = P.saturation; grade.uniforms.lift.value.copy(P.lift).multiplyScalar(0.25); grade.uniforms.gain.value.copy(P.gain); grade.uniforms.vig.value = P.vignette; grade.uniforms.time.value = time;
+  mountains.material.color.copy(P.fogColor).multiplyScalar(0.72).lerp(P.skyTop, 0.25);
+  motes.material.uniforms.color.value.copy(P.motes).multiplyScalar(0.6 + P.lanternGlow * 1.4);
+  motes.material.uniforms.opacity.value = 0.45 + 0.55 * P.blend;
+  motes.material.uniforms.center.value.copy(boatPos);
+  skyL.material.uniforms.opacity.value = P.blend; skyL.material.uniforms.center.value.copy(boatPos);
+  skyL.visible = P.blend > 0.02;
+  boat.light.intensity = 6 + 22 * P.lanternGlow;
+  boat.lantern.children[0].material.color.setRGB(2.2 + 2.0 * P.lanternGlow, 1.1 + 1.0 * P.lanternGlow, 0.45 + 0.4 * P.lanternGlow);
+  bridgeLights.forEach((l, i) => { l.intensity = (40 + 8 * Math.sin(time * 3 + i)) * P.lanternGlow; });
+  for (const L of bridge.userData.lanterns) L.rotation.z = Math.sin(time * 1.2 + L.position.x) * 0.06;
+
+  // floating lanterns drift gently downstream
+  const items = floating.items; const lg = 0.25 + 0.75 * P.lanternGlow;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const uu = it.u - (time * it.speed * 0.02) / path.L * 10;
+    const up = path.curve.getPointAt(THREE.MathUtils.clamp(uu, 0, 1)), ut = path.curve.getTangentAt(THREE.MathUtils.clamp(uu, 0, 1));
+    const lat = it.lat + Math.sin(time * 0.2 + it.phase) * 0.8;
+    p4.set(up.x + ut.z * lat, 0.12 + Math.sin(time * 1.4 + it.phase) * 0.05, up.z - ut.x * lat);
+    // push lanterns gently aside when the boat comes close
+    const dx = p4.x - boatPos.x, dz = p4.z - boatPos.z, d = Math.hypot(dx, dz);
+    if (d < 3.2) { p4.x += dx / d * (3.2 - d); p4.z += dz / d * (3.2 - d); }
+    e4.set(Math.sin(time * 1.1 + it.phase) * 0.06, it.phase, Math.cos(time * 1.3 + it.phase) * 0.06);
+    q4.setFromEuler(e4); s4.setScalar(it.scale);
+    m4.compose(p4, q4, s4); floating.base.setMatrixAt(i, m4);
+    p4.y += 0.38 * it.scale; m4.compose(p4, q4, s4); floating.paper.setMatrixAt(i, m4);
+    tmpV2.set(paperColors[i].r, paperColors[i].g, paperColors[i].b).multiplyScalar(lg * (0.85 + 0.15 * Math.sin(time * 2.3 + it.phase * 5)));
+    floating.paper.setColorAt(i, new THREE.Color(tmpV2.x, tmpV2.y, tmpV2.z));
+  }
+  floating.paper.instanceMatrix.needsUpdate = true; floating.base.instanceMatrix.needsUpdate = true; floating.paper.instanceColor.needsUpdate = true;
+
+  // zone title
+  if (ST.mode === 'play' && P.zoneIndex !== ST.zoneShown) { ST.zoneShown = P.zoneIndex; setZoneTitle(P.zoneIndex); }
+
+  // --- camera ---
+  if (look.idle > 2.5) { look.tYaw *= 1 - Math.min(1, dt * 0.6); look.tPitch *= 1 - Math.min(1, dt * 0.6); }
+  look.idle += dt;
+  if (keys.has('ArrowLeft') || keys.has('KeyA')) { look.tYaw += dt * 1.1; look.idle = 0; }
+  if (keys.has('ArrowRight') || keys.has('KeyD')) { look.tYaw -= dt * 1.1; look.idle = 0; }
+  look.tYaw = THREE.MathUtils.clamp(look.tYaw, -2.2, 2.2); look.tPitch = THREE.MathUtils.clamp(look.tPitch, -0.25, 0.45);
+  look.yaw += (look.tYaw - look.yaw) * Math.min(1, dt * 4); look.pitch += (look.tPitch - look.pitch) * Math.min(1, dt * 4);
+  let yaw = heading + look.yaw, dist = 8.2, height = 3.1 + look.pitch * 6;
+  if (ST.mode === 'title') { yaw = heading + 0.9 + Math.sin(time * 0.08) * 0.35; dist = 10.5; height = 2.6; }
+  const portrait = innerHeight > innerWidth; if (portrait) { dist += 1.8; height += 0.6; }
+  camPos.set(Math.sin(yaw) * dist, height, Math.cos(yaw) * dist).add(boatPos);
+  camPos.y += Math.sin(time * 1.35) * 0.06;
+  // keep camera above terrain
+  camLook.set(boatPos.x, 1.3, boatPos.z).addScaledVector(tmpV.set(-Math.sin(heading), 0, -Math.cos(heading)), 4.0);
+  if (!camInit) { camera.position.copy(camPos); camInit = true; }
+  camera.position.lerp(camPos, Math.min(1, dt * 2.5));
+  camera.lookAt(camLook);
+
+  composer.render(dt);
+  requestAnimationFrame(frame);
+}
+
+// expose a tiny hook for automated screenshots
+window.__db = { setU: (v) => { ST.s = v * path.L; camInit = false; }, start: startGame, path, ST, row: (on) => { rowBtnHeld = on; } };
+
+requestAnimationFrame(() => { fade.classList.add('off'); });
+if (SHOT) { document.body.classList.add('shot'); }
+if (qs.has('auto')) { ST.mode = 'play'; $('startScreen').classList.add('hidden'); }
+frame();

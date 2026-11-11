@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#2a1a33">
+<title>DREAM BOAT — 꿈속을 달리는 보트</title>
+<meta name="description" content="DREAM BOAT — a calm 3D boat journey through dreamlike places. By MOTOR AA.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='28' r='18' fill='%23ffb070'/%3E%3Cpath d='M8 42h48l-8 10H16z' fill='%238a5634'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/build/three.module.min.js",
+  "three/addons/": "./vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud" class="hidden">
+  <div class="brand"><svg viewBox="0 0 24 24" class="ic"><path d="M3 15h18l-3 4H6z"/><path d="M12 15V5l5 7h-5"/></svg><span>DREAM BOAT</span></div>
+  <div class="tools">
+    <button id="langBtn" class="pill" data-i18n-aria="language"><svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/></svg><span id="langCode">EN</span></button>
+    <button id="muteBtn" class="pill" data-i18n-aria="mute"><svg viewBox="0 0 24 24" class="ic" id="icSound"><path d="M4 10v4h4l5 4V6L8 10z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></svg><span id="muteLabel" data-i18n="mute">Mute</span></button>
+  </div>
+</div>
+
+<div id="langMenu" class="menu hidden" role="menu"></div>
+
+<div id="zoneTitle"><div class="zt-name"></div><div class="zt-line"></div><div class="zt-sub"></div></div>
+<div id="hint" class="hidden"></div>
+
+<button id="rowBtn" class="hidden" data-i18n-aria="row">
+  <svg viewBox="0 0 24 24" class="ic big"><path d="M4 20 15 9"/><path d="M15 9l2.5-5.5L21 7l-5.5 2.5z"/><path d="M2.5 18.5l3 3"/></svg>
+  <span data-i18n="row">Row</span>
+</button>
+
+<div id="startScreen" class="screen">
+  <div class="card">
+    <div class="sample" data-i18n="sample">First sample</div>
+    <h1>DREAM BOAT</h1>
+    <div class="sub" data-i18n="subtitle"></div>
+    <p class="intro" data-i18n="intro"></p>
+    <button id="startBtn" class="cta"><svg viewBox="0 0 24 24" class="ic"><path d="M3 15h18l-3 4H6z"/><path d="M12 15V5l5 7h-5"/></svg><span data-i18n="start">Set sail</span></button>
+    <div class="hintline" id="startHint"></div>
+    <div class="foot"><span data-i18n="provider">MOTOR AA</span> · <span data-i18n="musicNote"></span></div>
+  </div>
+</div>
+
+<div id="endScreen" class="screen hidden">
+  <div class="card">
+    <h2 data-i18n="endTitle"></h2>
+    <div class="sub" data-i18n="endSub"></div>
+    <button id="againBtn" class="cta"><svg viewBox="0 0 24 24" class="ic"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4h4"/></svg><span data-i18n="again">Sail again</span></button>
+    <div class="foot"><span data-i18n="provider">MOTOR AA</span></div>
+  </div>
+</div>
+
+<div id="fade"></div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
