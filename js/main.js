@@ -6,12 +6,12 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
-import { PU } from './paint.js?v=4';
-import * as W from './world.js?v=4';
-import { Boat } from './boat.js?v=4';
-import { ZONES, zoneParamsAt } from './zones.js?v=4';
-import { DreamAudio } from './audio.js?v=4';
-import { LANGS, detectLang, setLang, getLang, t } from './i18n.js?v=4';
+import { PU } from './paint.js?v=5';
+import * as W from './world.js?v=5';
+import { Boat } from './boat.js?v=5';
+import { ZONES, zoneParamsAt } from './zones.js?v=5';
+import { DreamAudio } from './audio.js?v=5';
+import { LANGS, detectLang, setLang, getLang, t } from './i18n.js?v=5';
 
 const qs = new URLSearchParams(location.search);
 const SHOT = qs.has('shot');
@@ -235,7 +235,7 @@ canvas.addEventListener('pointermove', (e) => {
   const p = pointers.get(e.pointerId); if (!p) return;
   const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
   if (!p.drag && Math.hypot(p.x - p.sx, p.y - p.sy) > 10) p.drag = true;
-  if (p.drag) { look.tYaw -= dx * 0.005; look.tPitch -= dy * 0.003; look.idle = 0; }
+  if (p.drag) { look.tYaw += dx * 0.005; look.tPitch += dy * 0.003; /* inverted (v5) */ look.idle = 0; }
 });
 const endPtr = (e) => pointers.delete(e.pointerId);
 canvas.addEventListener('pointerup', endPtr); canvas.addEventListener('pointercancel', endPtr);
@@ -445,8 +445,8 @@ function frame() {
   // --- camera ---
   if (look.idle > 2.5) { look.tYaw *= 1 - Math.min(1, dt * 0.6); look.tPitch *= 1 - Math.min(1, dt * 0.6); }
   look.idle += dt;
-  if (keys.has('ArrowLeft') || keys.has('KeyA')) { look.tYaw += dt * 1.1; look.idle = 0; }
-  if (keys.has('ArrowRight') || keys.has('KeyD')) { look.tYaw -= dt * 1.1; look.idle = 0; }
+  if (keys.has('ArrowLeft') || keys.has('KeyA')) { look.tYaw -= dt * 1.1; look.idle = 0; }
+  if (keys.has('ArrowRight') || keys.has('KeyD')) { look.tYaw += dt * 1.1; look.idle = 0; }
   look.tYaw = THREE.MathUtils.clamp(look.tYaw, -2.2, 2.2); look.tPitch = THREE.MathUtils.clamp(look.tPitch, -0.25, 0.45);
   look.yaw += (look.tYaw - look.yaw) * Math.min(1, dt * 4); look.pitch += (look.tPitch - look.pitch) * Math.min(1, dt * 4);
   let yaw = heading + look.yaw, dist = 8.2, height = 3.1 + look.pitch * 6;
@@ -467,7 +467,7 @@ function frame() {
 }
 
 // expose a tiny hook for automated screenshots
-window.__db = { post: { bloom, fxaa, grade, composer }, renderer, scene, setU: (v) => { ST.s = v * path.L; camInit = false; }, start: startGame, path, ST, row: (on) => { rowBtnHeld = on; } };
+window.__db = { look, post: { bloom, fxaa, grade, composer }, renderer, scene, setU: (v) => { ST.s = v * path.L; camInit = false; }, start: startGame, path, ST, row: (on) => { rowBtnHeld = on; } };
 
 requestAnimationFrame(() => { fade.classList.add('off'); });
 if (SHOT) { document.body.classList.add('shot'); }

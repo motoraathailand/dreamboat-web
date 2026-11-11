@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { Reflector } from 'three/addons/objects/Reflector.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { paint, PU } from './paint.js?v=4';
+import { paint, PU } from './paint.js?v=5';
 
 // ---------- small deterministic RNG ----------
 export function rng(seed = 1) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
