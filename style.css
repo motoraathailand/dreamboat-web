@@ -52,3 +52,25 @@ h2 { font-family: Georgia, "Noto Serif", "Noto Serif KR", serif; font-weight:400
 #fade { position:fixed; inset:0; background:#1a0f1e; opacity:1; pointer-events:none; transition:opacity 2.5s ease; z-index:30; }
 #fade.off { opacity:0; }
 body.shot #hud, body.shot #hint, body.shot #rowBtn { display:none; }
+
+.ghost { display:inline-flex; align-items:center; gap:8px; font:inherit; font-size:15px; color:var(--ink); padding:11px 22px; border-radius:24px; cursor:pointer; margin-top:14px;
+  background:var(--glass); border:1px solid var(--line); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); transition:background .3s, transform .3s; }
+.ghost:hover { background:rgba(70,40,70,.5); }
+.ghost:active { transform:scale(.97); }
+.ghost.hidden { display:none; }
+.card.wide { max-width:760px; width:100%; padding:22px 14px; max-height:100%; overflow-y:auto; }
+.sub.small { font-size:14px; opacity:.8; margin-bottom:6px; }
+.pgrid { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin:16px 0 4px; }
+@media (max-width:640px){ .pgrid { grid-template-columns:repeat(2, 1fr); gap:10px; } }
+.pcard { position:relative; border-radius:18px; overflow:hidden; aspect-ratio: 4 / 3; border:1px solid var(--line); cursor:pointer; padding:0; color:var(--ink); font:inherit;
+  text-align:left; box-shadow:0 6px 22px rgba(20,8,24,.35); transition:transform .3s, box-shadow .3s; }
+.pcard:hover { transform:translateY(-2px); box-shadow:0 10px 30px rgba(255,150,80,.3); }
+.pcard .sun { position:absolute; width:34%; aspect-ratio:1; border-radius:50%; left:58%; top:30%; filter:blur(2px); }
+.pcard .hill { position:absolute; left:-10%; right:-10%; bottom:24%; height:30%; border-radius:50% 50% 0 0; opacity:.9; }
+.pcard .water { position:absolute; left:0; right:0; bottom:0; height:30%; }
+.pcard .lbl { position:absolute; left:10px; right:8px; bottom:8px; font-size:13.5px; line-height:1.25; text-shadow:0 1px 6px rgba(0,0,0,.6); }
+.pcard .num { position:absolute; left:10px; top:8px; font-size:11px; letter-spacing:.1em; opacity:.85; text-shadow:0 1px 6px rgba(0,0,0,.6); }
+.pcard.locked { cursor:default; filter:grayscale(.85) brightness(.55); }
+.pcard.locked:hover { transform:none; box-shadow:0 6px 22px rgba(20,8,24,.35); }
+.pcard .lock { position:absolute; right:10px; top:8px; width:18px; height:18px; }
+.prow { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }

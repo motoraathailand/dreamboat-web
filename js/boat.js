@@ -1,7 +1,7 @@
 // Procedural wooden rowing boat with a rower, two oars and a hanging bow lantern.
 import * as THREE from 'three';
-import { lanternMesh } from './world.js?v=5';
-import { paint } from './paint.js?v=5';
+import { lanternMesh } from './world.js?v=6';
+import { paint } from './paint.js?v=6';
 
 const LEN = 4.4;
 const hw = (s) => 0.7 * Math.pow(Math.max(1 - Math.pow(Math.abs(s), 2.4), 0.0), 0.55) + 0.02;

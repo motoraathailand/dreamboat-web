@@ -3,22 +3,58 @@
 const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
 
 const MOODS = [
-  { // Sunset River — D major, warm, slow, pentatonic glints
+  { // 1 Sunset River — D major, warm, slow, pentatonic glints
     bar: 7.5,
     chords: [[50, 57, 62, 66, 69], [47, 54, 62, 66, 71], [43, 50, 59, 62, 66], [45, 52, 59, 62, 64]],
     scale: [62, 64, 66, 69, 71, 74, 76, 78, 81],
-    padType: 'sawtooth', padCut: 900, arpRate: 0.95, arpOct: 0, bell: 0.0, arpGain: 0.09,
+    padType: 'sawtooth', padCut: 900, arpRate: 0.95, arpOct: 0, bell: 0, arpGain: 0.09,
   },
-  { // Lantern Bridge — Eb lydian, twilight, music-box bells
+  { // 2 Golden Reeds — G mixolydian, airy open fifths, slow breathy plucks
+    bar: 8.5,
+    chords: [[43, 50, 57, 62, 67], [41, 48, 57, 62, 65], [48, 55, 62, 64, 67], [43, 50, 59, 62, 69]],
+    scale: [62, 64, 65, 67, 69, 71, 72, 74, 76],
+    padType: 'sine', padCut: 1100, arpRate: 1.25, arpOct: 0, bell: 0, arpGain: 0.08,
+  },
+  { // 3 Old Wooden Bridges — F major, kalimba-like plucks a little higher
+    bar: 7.0,
+    chords: [[41, 48, 57, 60, 64], [46, 53, 57, 62, 65], [38, 45, 57, 60, 65], [43, 50, 58, 62, 65]],
+    scale: [65, 67, 69, 72, 74, 77, 79, 81],
+    padType: 'triangle', padCut: 1000, arpRate: 0.62, arpOct: 0, bell: 0, arpGain: 0.075,
+  },
+  { // 4 Misty Valley — A dorian, very slow, sparse soft tones
+    bar: 11.0,
+    chords: [[45, 52, 59, 60, 64], [43, 50, 57, 59, 62], [41, 48, 55, 57, 64], [45, 52, 54, 59, 64]],
+    scale: [57, 59, 60, 62, 64, 66, 69, 71],
+    padType: 'sine', padCut: 750, arpRate: 1.9, arpOct: 0, bell: 0, arpGain: 0.065,
+  },
+  { // 5 Firefly Forest — E major 7 shimmer, quick tiny twinkles up high
+    bar: 9.5,
+    chords: [[40, 47, 56, 63, 66], [45, 52, 56, 61, 64], [37, 44, 56, 59, 63], [42, 49, 56, 61, 66]],
+    scale: [68, 71, 73, 75, 76, 78, 80, 83],
+    padType: 'triangle', padCut: 1200, arpRate: 0.42, arpOct: 12, bell: 1, arpGain: 0.045,
+  },
+  { // 6 Lantern Bridge — Eb lydian, twilight, music-box bells
     bar: 9.0,
     chords: [[51, 58, 62, 65, 69], [48, 55, 62, 63, 67], [44, 51, 60, 63, 67], [46, 53, 60, 62, 65]],
     scale: [63, 65, 67, 69, 70, 72, 74, 75, 77, 79, 82],
-    padType: 'triangle', padCut: 1300, arpRate: 0.7, arpOct: 12, bell: 1.0, arpGain: 0.07,
+    padType: 'triangle', padCut: 1300, arpRate: 0.7, arpOct: 12, bell: 1, arpGain: 0.07,
+  },
+  { // 7 Starlight Lake — Db add9, wide and spacious, slow glassy bells
+    bar: 10.5,
+    chords: [[49, 56, 63, 65, 68], [46, 53, 61, 63, 68], [42, 49, 58, 61, 65], [44, 51, 60, 63, 66]],
+    scale: [61, 63, 65, 68, 70, 73, 75, 77, 80],
+    padType: 'sine', padCut: 950, arpRate: 1.35, arpOct: 12, bell: 1, arpGain: 0.06,
+  },
+  { // 8 Dawn Cloud Sea — C major, gently rising, brighter pad
+    bar: 8.0,
+    chords: [[48, 55, 64, 67, 72], [47, 55, 62, 67, 71], [45, 52, 60, 64, 71], [41, 48, 57, 64, 69]],
+    scale: [60, 62, 64, 67, 69, 72, 74, 76, 79],
+    padType: 'sawtooth', padCut: 1250, arpRate: 0.85, arpOct: 0, bell: 0, arpGain: 0.08,
   },
 ];
 
 export class DreamAudio {
-  constructor() { this.ctx = null; this.muted = false; this.mix = [1, 0]; this.started = false; }
+  constructor() { this.ctx = null; this.muted = false; this.mix = MOODS.map((_, i) => (i === 0 ? 1 : 0)); this.started = false; }
 
   start() {
     if (this.started) { this.ctx.resume(); return; }
@@ -39,7 +75,7 @@ export class DreamAudio {
     // zone buses
     this.bus = MOODS.map((m, i) => {
       const g = ctx.createGain(); g.gain.value = this.mix[i]; g.connect(this.master); g.connect(this.reverb);
-      return { gain: g, mood: m, nextBar: ctx.currentTime + 0.2, chord: 0, nextNote: ctx.currentTime + 1.5 + i, last: 4 };
+      return { gain: g, mood: m, nextBar: ctx.currentTime + 0.2, chord: 0, nextNote: ctx.currentTime + 1.5 + (i % 3) * 0.7, last: 4 };
     });
     // water ambience: looping filtered noise with slow swells
     const noise = ctx.createBufferSource(); noise.buffer = this.noiseBuffer(6, true); noise.loop = true;
@@ -64,8 +100,12 @@ export class DreamAudio {
     return b;
   }
 
-  setMix(w) { // 0 => zone1, 1 => zone2
-    this.mix = [1 - w, w];
+  // crossfade between two zone moods (a -> b by w); only changes are sent to the audio graph
+  setZone(a, b, w) {
+    const mix = MOODS.map(() => 0); mix[a] += 1 - w; mix[b] += w;
+    let changed = false; for (let i = 0; i < mix.length; i++) if (Math.abs(mix[i] - this.mix[i]) > 0.01) changed = true;
+    if (!changed) return;
+    this.mix = mix;
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     this.bus.forEach((b, i) => b.gain.gain.setTargetAtTime(this.mix[i], t, 1.2));
@@ -87,7 +127,7 @@ export class DreamAudio {
       }
       while (b.nextNote < ahead) {
         if (live && Math.random() < 0.82) this.pluck(b, b.nextNote);
-        const r = b.mood.arpRate; b.nextNote += r * (Math.random() < 0.3 ? 2 : 1) * (0.9 + Math.random() * 0.25);
+        const r = b.mood.arpRate * (live ? 1 : 4); b.nextNote += r * (Math.random() < 0.3 ? 2 : 1) * (0.9 + Math.random() * 0.25);
       }
     });
     // occasional water droplets

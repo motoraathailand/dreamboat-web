@@ -6,8 +6,16 @@ code (js/audio.js) using the Web Audio API. No audio files, samples, loops, or
 third-party/famous melodies are used. Chord progressions and note patterns are original
 and partly randomised on every play.
 
-Zone 1 "Sunset River": D major, slow warm sawtooth/sine pads, pentatonic plucks.
-Zone 2 "Lantern Bridge": E-flat lydian, triangle pads, music-box style bells.
-Zones crossfade as the boat travels.
+Each of the 8 places has its own original mood; neighbouring moods crossfade smoothly
+as the boat travels from one place to the next.
+
+1 "Sunset River"        D major, slow warm sawtooth/sine pads, pentatonic plucks.
+2 "Golden Reeds"        G mixolydian, airy open-fifth sine pads, slow breathy plucks.
+3 "Old Wooden Bridges"  F major, triangle pads, light kalimba-like plucks.
+4 "Misty Valley"        A dorian, very slow soft sine pads, sparse tones.
+5 "Firefly Forest"      E major 7 shimmer, tiny high bell twinkles.
+6 "Lantern Bridge"      E-flat lydian, triangle pads, music-box style bells.
+7 "Starlight Lake"      D-flat add9, wide spacious pads, slow glassy bells.
+8 "Dawn Cloud Sea"      C major, gently rising progression, brighter pad.
 
 Created by the project for MOTOR AA. Free to use with the game.

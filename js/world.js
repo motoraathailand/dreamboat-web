@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { Reflector } from 'three/addons/objects/Reflector.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { paint, PU } from './paint.js?v=5';
+import { paint, PU } from './paint.js?v=6';
 
 // ---------- small deterministic RNG ----------
 export function rng(seed = 1) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
@@ -20,105 +20,209 @@ function vnoise(x, y) {
 function fbm(x, y) { let f = 0, a = 0.5; for (let i = 0; i < 4; i++) { f += a * vnoise(x, y); x *= 2.03; y *= 2.03; a *= 0.5; } return f; }
 
 // ---------- river path ----------
+// One long continuous river through all 8 places. Zone k occupies u in [k/8, (k+1)/8).
+export const NZ = 8;
+export let PL = 2400; // path length (set by makePath)
 export function makePath() {
   const pts = [];
-  const N = 11, step = 52;
+  const N = 46, step = 52;
   for (let i = 0; i < N; i++) {
     const z = -i * step;
-    const x = 26 * Math.sin(i * 0.85 + 0.3) + 10 * Math.sin(i * 1.9);
+    // gentle meanders; calmer in the wide lake / dawn stretch
+    const calmK = i > 34 ? 0.45 : 1;
+    const x = (26 * Math.sin(i * 0.85 + 0.3) + 10 * Math.sin(i * 1.9)) * calmK;
     pts.push(new THREE.Vector3(i === 0 ? 0 : x, 0, z));
   }
   pts[0].x = pts[1].x * 0.3;
   const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
-  curve.arcLengthDivisions = 1000;
-  const L = curve.getLength();
-  const samples = [];
-  for (let i = 0; i <= 400; i++) { const p = curve.getPointAt(i / 400); samples.push([p.x, p.z]); }
+  curve.arcLengthDivisions = 4000;
+  const L = curve.getLength(); PL = L;
+  const samples = [], NS = 1600;
+  for (let i = 0; i <= NS; i++) { const p = curve.getPointAt(i / NS); samples.push([p.x, p.z]); }
   return { curve, L, samples };
 }
-export const riverHalfWidth = (u) => 12.5 + 3.5 * Math.sin(u * 17.0 + 1.0) + (u > 0.6 && u < 0.8 ? -2.5 * Math.sin((u - 0.6) / 0.2 * Math.PI) : 0) + (u > 0.85 ? (u - 0.85) * 120 : 0);
+const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+const band = (u, a, b, f = 0.02) => sstep(a - f, a + f, u) * (1 - sstep(b - f, b + f, u));
+// bridges along the river: lantern bridge (zone 6) and three old wooden footbridges (zone 3)
+export const BRIDGE_U = 0.68;
+export const FOOT_U = [0.272, 0.31, 0.352];
+export const riverHalfWidth = (u) => {
+  const s = u * PL;
+  let w = 12.5 + 3.5 * Math.sin(s * 0.028 + 1.0);
+  w -= 2.5 * Math.exp(-Math.pow((s - BRIDGE_U * PL) / 45, 2));
+  for (const f of FOOT_U) w -= 3.0 * Math.exp(-Math.pow((s - f * PL) / 25, 2));
+  w -= 2.0 * band(u, 0.39, 0.49) + 1.5 * band(u, 0.52, 0.61); // narrow misty gorge, cosy firefly stream
+  w += 26 * band(u, 0.765, 0.865, 0.03);                        // starlight lake
+  w += 55 * sstep(0.885, 0.975, u);                             // dawn: river opens into a sea of clouds
+  return w;
+};
+// hill amplitude per place (misty valley = tall slopes, lake / dawn = low open shores)
+const hillAmp = (u) => 1 + 0.9 * band(u, 0.39, 0.49) + 0.35 * band(u, 0.5, 0.62) + 0.4 * band(u, 0.13, 0.24) * -1 - 0.55 * band(u, 0.77, 0.87) - 0.75 * sstep(0.88, 0.95, u);
 
-// distance (2D) from point to sampled polyline, returns [dist, u] — coarse-to-fine for speed
+// distance (2D) from point to sampled polyline, returns [dist, u]
+// the river runs monotonically toward -z, so start from the sample at the same z and search a window
 function segDist(samples, i, x, z) {
   const ax = samples[i][0], az = samples[i][1], bx = samples[i + 1][0], bz = samples[i + 1][1];
   const dx = bx - ax, dz = bz - az; const l2 = dx * dx + dz * dz;
   let t = ((x - ax) * dx + (z - az) * dz) / l2; t = t < 0 ? 0 : t > 1 ? 1 : t;
   const px = ax + dx * t - x, pz = az + dz * t - z; return [px * px + pz * pz, t];
 }
+function zIndex(samples, z) {
+  let lo = 0, hi = samples.length - 1;
+  if (z >= samples[0][1]) return 0; if (z <= samples[hi][1]) return hi;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (samples[m][1] > z) lo = m; else hi = m; }
+  return lo;
+}
 function distToPath(samples, x, z) {
   const n = samples.length - 1;
-  let best = 1e18, bi = 0;
-  for (let i = 0; i < n; i += 6) { const dx = samples[i][0] - x, dz = samples[i][1] - z; const d = dx * dx + dz * dz; if (d < best) { best = d; bi = i; } }
+  const i0 = zIndex(samples, z);
+  let best = 1e18, bi = i0;
+  for (let i = Math.max(0, i0 - 120); i <= Math.min(n, i0 + 120); i += 4) { const dx = samples[i][0] - x, dz = samples[i][1] - z; const d = dx * dx + dz * dz; if (d < best) { best = d; bi = i; } }
   best = 1e18; let bu = 0;
-  for (let i = Math.max(0, bi - 14); i < Math.min(n, bi + 14); i++) { const [d, t] = segDist(samples, i, x, z); if (d < best) { best = d; bu = (i + t) / n; } }
+  for (let i = Math.max(0, bi - 6); i < Math.min(n, bi + 6); i++) { const [d, t] = segDist(samples, i, x, z); if (d < best) { best = d; bu = (i + t) / n; } }
   return [Math.sqrt(best), bu];
 }
-
-export function terrainHeight(path, x, z) {
-  const [d, u] = distToPath(path.samples, x, z);
-  const W = riverHalfWidth(u);
+function terrainHU(path, x, z) {
+  // fast path far from the river: past the hill shoulder only the noise matters
+  const sm = path.samples, i0 = zIndex(sm, z), dx = Math.abs(sm[i0][0] - x), u0 = i0 / (sm.length - 1);
+  let d, u;
+  if (dx * 0.75 > riverHalfWidth(u0) + 130) { d = dx * 0.75; u = u0; } else [d, u] = distToPath(sm, x, z);
+  const W = riverHalfWidth(u), ha = hillAmp(u);
   const bank = THREE.MathUtils.smoothstep(d, W - 3, W + 9);
-  const hills = THREE.MathUtils.smoothstep(d, W + 15, W + 110);
+  const hills = THREE.MathUtils.smoothstep(d, W + 15 - (ha - 1) * 8, W + 110 - (ha - 1) * 30);
   const n = fbm(x * 0.018, z * 0.018);
-  return -3.0 + bank * (4.2 + n * 2.5) + hills * (n * 34 + 6) + (fbm(x * 0.09, z * 0.09) - 0.5) * 1.4 * bank;
+  return [-3.0 + bank * (4.2 + n * 2.5) + hills * (n * 34 + 6) * ha + (fbm(x * 0.09, z * 0.09) - 0.5) * 1.4 * bank, u];
+}
+export function terrainHeight(path, x, z) { return terrainHU(path, x, z)[0]; }
+
+export const TB = { minX: -230, maxX: 230, minZ: 220 }; // terrain bounds (maxZ depends on path)
+
+// per-place ground tint (multiplied into the painted vertex colours, blended along the river)
+const GROUND_TINT = ['#ffffff', '#fff0c8', '#f4f0e0', '#c8d4d8', '#9ab8a0', '#b0a8d8', '#a8b0e0', '#ffd8d0'].map(h => new THREE.Color(h));
+function groundTint(u, out) {
+  const f = u * NZ - 0.5; const i = Math.max(0, Math.min(NZ - 1, Math.floor(f))), j = Math.min(NZ - 1, i + 1);
+  const w = sstep(0.3, 0.7, f - i); return out.copy(GROUND_TINT[i]).lerp(GROUND_TINT[j], f < 0 ? 0 : w);
 }
 
-export const TB = { minX: -230, maxX: 230, minZ: 150 }; // terrain bounds (maxZ depends on path)
-
-// ---------- terrain mesh (smooth, painted) ----------
-export function makeTerrain(path, quality) {
+// ---------- terrain mesh (smooth, painted), split into chunks along the river ----------
+// Built progressively: rows near the start are computed at once, the rest streams in a few ms per frame.
+export function makeTerrain(path, quality, startZ = 0) {
   const minX = TB.minX, maxX = TB.maxX, minZ = TB.minZ, maxZ = -path.L - 220;
   const hiRes = quality !== 'low';
-  const sx = hiRes ? 150 : 110, sz = hiRes ? 250 : 180;
-  const g = new THREE.PlaneGeometry(maxX - minX, minZ - maxZ, sx, sz);
-  g.rotateX(-Math.PI / 2);
-  g.translate((minX + maxX) / 2, 0, (minZ + maxZ) / 2);
-  const pos = g.attributes.position; const col = new Float32Array(pos.count * 3);
+  const span = minZ - maxZ;
+  const sx = hiRes ? 150 : 104, sz = Math.round(span / (hiRes ? 3.9 : 5.4));
+  const cellX = (maxX - minX) / sx, cellZ = span / sz;
+  const NX = sx + 1, NZr = sz + 1;
+  const P = new Float32Array(NX * NZr * 3), C = new Float32Array(NX * NZr * 3);
+  const done = new Uint8Array(NZr);
   const cWet = new THREE.Color('#4a3a32'), cSand = new THREE.Color('#a4865c'), cGold = new THREE.Color('#a89a4c'), cGrass = new THREE.Color('#7c8a42'),
-    cGrass2 = new THREE.Color('#5a7838'), cHill = new THREE.Color('#4c6238'), cHigh = new THREE.Color('#7e6c58'), cRust = new THREE.Color('#9a6a3c'), tmp = new THREE.Color();
-  const cellX = (maxX - minX) / sx, cellZ = (minZ - maxZ) / sz;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i) + (hash2(i, 3) - 0.5) * cellX * 0.5, z = pos.getZ(i) + (hash2(i, 7) - 0.5) * cellZ * 0.5;
-    pos.setX(i, x); pos.setZ(i, z);
-    const h = terrainHeight(path, x, z); pos.setY(i, h);
-    const nA = fbm(x * 0.05, z * 0.05), nB = fbm(x * 0.013 + 9, z * 0.013);
-    if (h < 0.15) tmp.copy(cWet);
-    else if (h < 0.9) tmp.copy(cWet).lerp(cSand, THREE.MathUtils.smoothstep(h, 0.15, 0.6)).lerp(cGold, THREE.MathUtils.smoothstep(h, 0.55, 0.9));
-    else if (h < 9) tmp.copy(cGold).lerp(cGrass, THREE.MathUtils.smoothstep(h, 0.9, 2.6)).lerp(cGrass2, nA * 0.9).lerp(cRust, Math.max(0, nB - 0.55) * 1.6);
-    else tmp.copy(cHill).lerp(cHigh, THREE.MathUtils.smoothstep(h, 14, 34)).lerp(cRust, Math.max(0, nB - 0.6) * 1.2);
-    const v = 0.93 + hash2(i, 11) * 0.12; tmp.multiplyScalar(v);
-    col[i * 3] = tmp.r; col[i * 3 + 1] = tmp.g; col[i * 3 + 2] = tmp.b;
+    cGrass2 = new THREE.Color('#5a7838'), cHill = new THREE.Color('#4c6238'), cHigh = new THREE.Color('#7e6c58'), cRust = new THREE.Color('#9a6a3c'), tmp = new THREE.Color(), tint = new THREE.Color();
+  function row(j) {
+    for (let i = 0; i < NX; i++) {
+      const k = j * NX + i;
+      const x = minX + i * cellX + (hash2(k, 3) - 0.5) * cellX * 0.5 * (i > 0 && i < sx ? 1 : 0), z = minZ - j * cellZ + (hash2(k, 7) - 0.5) * cellZ * 0.5 * (j > 0 && j < sz ? 1 : 0);
+      const [h, u] = terrainHU(path, x, z);
+      P[k * 3] = x; P[k * 3 + 1] = h; P[k * 3 + 2] = z;
+      const nA = fbm(x * 0.05, z * 0.05), nB = fbm(x * 0.013 + 9, z * 0.013);
+      if (h < 0.15) tmp.copy(cWet);
+      else if (h < 0.9) tmp.copy(cWet).lerp(cSand, THREE.MathUtils.smoothstep(h, 0.15, 0.6)).lerp(cGold, THREE.MathUtils.smoothstep(h, 0.55, 0.9));
+      else if (h < 9) tmp.copy(cGold).lerp(cGrass, THREE.MathUtils.smoothstep(h, 0.9, 2.6)).lerp(cGrass2, nA * 0.9).lerp(cRust, Math.max(0, nB - 0.55) * 1.6);
+      else tmp.copy(cHill).lerp(cHigh, THREE.MathUtils.smoothstep(h, 14, 34)).lerp(cRust, Math.max(0, nB - 0.6) * 1.2);
+      if (h > 0.15) tmp.multiply(groundTint(u, tint));
+      const v = 0.93 + hash2(k, 11) * 0.12; tmp.multiplyScalar(v);
+      C[k * 3] = tmp.r; C[k * 3 + 1] = tmp.g; C[k * 3 + 2] = tmp.b;
+    }
+    done[j] = 1;
   }
-  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  g.computeVertexNormals();
-  const m = new THREE.Mesh(g, paint(new THREE.MeshLambertMaterial({ vertexColors: true }), { freq: 0.09, amt: 0.16, rim: 0.0 }));
-  m.name = 'terrain'; m.receiveShadow = true;
-  return m;
+  const mat = paint(new THREE.MeshLambertMaterial({ vertexColors: true }), { freq: 0.09, amt: 0.16, rim: 0.0 });
+  const group = new THREE.Group(); group.name = 'terrain'; group.userData.chunks = [];
+  const rowsPer = Math.ceil(sz / 12);
+  const chunks = [];
+  for (let r0 = 0; r0 < sz; r0 += rowsPer) chunks.push({ r0, r1: Math.min(sz, r0 + rowsPer), mesh: null });
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), nn = new THREE.Vector3();
+  function buildChunk(ch) {
+    const { r0, r1 } = ch, rows = r1 - r0 + 1;
+    const pos = P.slice(r0 * NX * 3, (r1 + 1) * NX * 3), nor = new Float32Array(pos.length);
+    for (let j = r0; j <= r1; j++) for (let i = 0; i < NX; i++) {
+      const L = j * NX + Math.max(0, i - 1), R = j * NX + Math.min(sx, i + 1), U = Math.max(0, j - 1) * NX + i, D = Math.min(sz, j + 1) * NX + i;
+      a.set(P[R * 3] - P[L * 3], P[R * 3 + 1] - P[L * 3 + 1], P[R * 3 + 2] - P[L * 3 + 2]);
+      b.set(P[D * 3] - P[U * 3], P[D * 3 + 1] - P[U * 3 + 1], P[D * 3 + 2] - P[U * 3 + 2]);
+      nn.crossVectors(b, a).normalize(); if (nn.y < 0) nn.negate();
+      const k = ((j - r0) * NX + i) * 3; nor[k] = nn.x; nor[k + 1] = nn.y; nor[k + 2] = nn.z;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(C.slice(r0 * NX * 3, (r1 + 1) * NX * 3), 3));
+    const idx = [];
+    for (let j = 0; j < rows - 1; j++) for (let i = 0; i < sx; i++) { const q = j * NX + i; idx.push(q, q + NX, q + 1, q + 1, q + NX, q + NX + 1); }
+    g.setIndex(idx); g.computeBoundingSphere();
+    const m = new THREE.Mesh(g, mat); m.receiveShadow = true; m.name = 'terrainChunk';
+    m.userData.z0 = minZ - r0 * cellZ; m.userData.z1 = minZ - r1 * cellZ;
+    ch.mesh = m; group.add(m); group.userData.chunks.push(m);
+  }
+  const ready = (ch) => { for (let j = Math.max(0, ch.r0 - 1); j <= Math.min(sz, ch.r1 + 1); j++) if (!done[j]) return false; return true; };
+  // row order: the start region first, then ahead (downstream), then behind
+  const js = Math.max(0, Math.min(sz, Math.round((minZ - startZ) / cellZ)));
+  const jA = Math.max(0, js - Math.ceil(430 / cellZ)), jB = Math.min(sz, js + Math.ceil(720 / cellZ));
+  const order = [];
+  for (let j = jA; j <= jB; j++) order.push(j);
+  for (let j = jB + 1; j <= sz; j++) order.push(j);
+  for (let j = jA - 1; j >= 0; j--) order.push(j);
+  let oi = 0;
+  const flush = () => { for (const ch of chunks) if (!ch.mesh && ready(ch)) buildChunk(ch); };
+  while (oi < order.length && order[oi] <= jB && order[oi] >= jA) row(order[oi++]);
+  flush();
+  // call every frame with a small time budget (ms); returns true when everything is built
+  group.userData.step = (budget = 3) => {
+    if (oi >= order.length) return true;
+    const t0 = performance.now(); let n = 0;
+    while (oi < order.length && (n < 2 || performance.now() - t0 < budget)) { row(order[oi++]); n++; }
+    flush();
+    return oi >= order.length;
+  };
+  return group;
 }
 
-// terrain height as a texture for the water shader (shallows, shore foam, soft edge)
-export function makeHeightTex(path, quality) {
-  const W = quality === 'low' ? 160 : 256, H = quality === 'low' ? 320 : 512;
-  const minX = TB.minX, maxX = TB.maxX, minZ = TB.minZ, maxZ = -path.L - 220;
-  const data = new Uint8Array(W * H * 4);
-  for (let j = 0; j < H; j++) {
+// terrain height as a texture for the water shader (shallows, shore foam, soft edge); also streamed
+export function makeHeightTex(path, quality, startZ = 0) {
+  const minX = -170, maxX = 170, minZ = TB.minZ, maxZ = -path.L - 220;
+  const W = quality === 'low' ? 136 : 200, H = Math.min(4096, Math.round((minZ - maxZ) / (quality === 'low' ? 2.6 : 1.7)));
+  const data = new Uint8Array(W * H * 4).fill(255);
+  const sm = path.samples;
+  function row(j) {
     const z = minZ + (maxZ - minZ) * (j + 0.5) / H;
+    const i0 = zIndex(sm, z), px = sm[i0][0], thr = (riverHalfWidth(i0 / (sm.length - 1)) + 14) / 0.75; // beyond this the bank is always above water
     for (let i = 0; i < W; i++) {
       const x = minX + (maxX - minX) * (i + 0.5) / W;
+      if (Math.abs(x - px) > thr) continue;
       const h = terrainHeight(path, x, z);
       const v = Math.max(0, Math.min(255, Math.round((h + 3) / 5 * 255)));
       const k = (j * W + i) * 4; data[k] = v; data[k + 1] = v; data[k + 2] = v; data[k + 3] = 255;
     }
   }
   const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
-  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter; tex.needsUpdate = true;
-  return { tex, bounds: new THREE.Vector4(minX, minZ, maxX - minX, maxZ - minZ) };
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+  const dz = (minZ - maxZ) / H;
+  const js = Math.max(0, Math.min(H - 1, Math.round((minZ - startZ) / dz)));
+  const jA = Math.max(0, js - Math.ceil(200 / dz)), jB = Math.min(H - 1, js + Math.ceil(520 / dz));
+  for (let j = jA; j <= jB; j++) row(j);
+  tex.needsUpdate = true;
+  let next = jB + 1, prev = jA - 1, since = 0;
+  const step = (budget = 2) => {
+    if (next >= H && prev < 0) return true;
+    const t0 = performance.now(); let n = 0;
+    while ((next < H || prev >= 0) && (n < 4 || performance.now() - t0 < budget)) { if (next < H) row(next++); else row(prev--); n++; since++; }
+    if (since > 120 || (next >= H && prev < 0)) { tex.needsUpdate = true; since = 0; }
+    return next >= H && prev < 0;
+  };
+  return { tex, bounds: new THREE.Vector4(minX, minZ, maxX - minX, maxZ - minZ), step };
 }
 
 // distant layered ridges with aerial perspective (painted silhouettes)
 export function makeMountains(path) {
   const group = new THREE.Group(); group.name = 'mountains';
-  const cz = -path.L / 2; const layers = [];
+  const cz = 0; const layers = [];
   const LAYERS = [{ r: 300, h: 10, seed: 3, forest: true }, { r: 360, h: 55, seed: 1 }, { r: 470, h: 95, seed: 5 }, { r: 600, h: 150, seed: 9 }];
   LAYERS.forEach((Ly, li) => {
     const seg = Ly.forest ? 1100 : 360, pos = [], vv = [], idx = [];
@@ -133,7 +237,7 @@ export function makeMountains(path) {
         const crowns = Math.pow(Math.abs(Math.sin(a * 170 + vnoise(ca * 9, sa * 9) * 3.0)), 0.6) * (0.6 + 0.4 * vnoise(ca * 30, sa * 30));
         h = 14 + h * 18 + crowns * Ly.h + (vnoise(ca * 4 + 2, sa * 4) > 0.62 ? 8 * crowns : 0);
       } else h = Math.max(0.12, h) * Ly.h + 8;
-      const x = ca * Ly.r * 0.78, z = cz + sa * Ly.r * 1.3;
+      const x = ca * Ly.r * 0.92, z = cz + sa * Ly.r * 1.08;
       pos.push(x, -20, z, x, h, z); vv.push(0, 1);
       if (i < seg) { const k = i * 2; idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); }
     }
@@ -142,18 +246,18 @@ export function makeMountains(path) {
     geo.setAttribute('vv', new THREE.Float32BufferAttribute(vv, 1));
     geo.setIndex(idx);
     const mat = new THREE.ShaderMaterial({
-      uniforms: { col: { value: new THREE.Color() }, haze: { value: new THREE.Color() }, rim: { value: new THREE.Color() }, sunDir: PU.sunDir },
+      uniforms: { col: { value: new THREE.Color() }, haze: { value: new THREE.Color() }, rim: { value: new THREE.Color() }, sunDir: PU.sunDir, ctr: { value: new THREE.Vector2() } },
       side: THREE.DoubleSide, fog: false, depthWrite: true, transparent: true,
       vertexShader: `attribute float vv; varying float vV; varying vec3 vW; void main(){ vV = vv; vW = (modelMatrix * vec4(position,1.0)).xyz; gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0); }`,
-      fragmentShader: `uniform vec3 col, haze, rim, sunDir; varying float vV; varying vec3 vW;
+      fragmentShader: `uniform vec3 col, haze, rim, sunDir; uniform vec2 ctr; varying float vV; varying vec3 vW;
         float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
         float n2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f); return mix(mix(h21(i),h21(i+vec2(1,0)),f.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x), f.y); }
         void main(){
-          float ang = atan(vW.z, vW.x);
+          float ang = atan(vW.z - ctr.y, vW.x - ctr.x);
           float strokes = n2(vec2(ang * 24.0, vW.y * 0.05)) * 0.6 + n2(vec2(ang * 70.0, vW.y * 0.12)) * 0.4;
           float t = smoothstep(0.0, 0.85, vV + (strokes - 0.5) * 0.18);
           vec3 c = mix(haze, col, t * 0.85);
-          vec3 dir = normalize(vec3(vW.x, 0.0, vW.z - ${(-path.L / 2).toFixed(1)}));
+          vec3 dir = normalize(vec3(vW.x - ctr.x, 0.0, vW.z - ctr.y));
           float lit = pow(max(dot(normalize(vec3(sunDir.x, 0.0, sunDir.z)), dir), 0.0), 3.0);
           c += rim * lit * smoothstep(0.55, 1.0, vV) * 0.35;
           c *= 0.96 + 0.08 * strokes;
@@ -163,7 +267,8 @@ export function makeMountains(path) {
           #include <colorspace_fragment>
         }`,
     });
-    const mesh = new THREE.Mesh(geo, mat); mesh.renderOrder = -5; mesh.frustumCulled = false;
+    const mesh = new THREE.Mesh(geo, mat); mesh.frustumCulled = false; // far ridges draw first, so soft crests blend over them (not over the sky)
+    mesh.renderOrder = -9 + (LAYERS.length - 1 - li);
     group.add(mesh); layers.push({ mesh, depth: li / (LAYERS.length - 1) });
   });
   group.userData.layers = layers;
@@ -456,46 +561,51 @@ function pineGeo(seed) {
   return mergeGeometries(parts.map(p => p.index ? p.toNonIndexed() : p));
 }
 
-export function makeTrees(path, quality) {
+// shared geometry/material caches so each place reuses the same GPU programs and buffers
+const CACHE = {};
+const once = (k, f) => (CACHE[k] ||= f());
+export function makeTrees(path, quality, o = {}) {
+  const u0 = o.u0 ?? 0, u1 = o.u1 ?? 1, dens = o.k ?? 1, mix = o.mix ?? [0.3, 0.52, 0.64, 0.8], near = o.near ?? 4, far = o.far ?? 85, warmK = o.warm ?? 1, sizeK = o.size ?? 1;
   const group = new THREE.Group(); group.name = 'trees';
-  const variants = [
+  const variants = once('treeVariants', () => [
     { geo: blobClump(11, 6, { height: 1.7, spread: 0.8 }), kind: 'round' },
     { geo: blobClump(23, 8, { height: 2.0, spread: 1.0, size: 0.55 }), kind: 'round' },
     { geo: blobClump(37, 5, { height: 1.2, spread: 1.15, size: 0.7, squash: 0.7 }), kind: 'round' }, // wide, umbrella-ish
     { geo: blobClump(41, 6, { height: 2.6, spread: 0.18, size: 0.5, column: true, squash: 1.0 }), kind: 'column' }, // cypress / poplar
     { geo: pineGeo(53), kind: 'pine' },
-  ].map(v => { v.geo = v.geo.index ? v.geo.toNonIndexed() : v.geo; return v; });
-  const leafMat = paint(new THREE.MeshLambertMaterial({ vertexColors: true }), { freq: 1.3, amt: 0.14, trans: 0.55, rim: 0.22 });
-  const trunkGeo = new THREE.CylinderGeometry(0.09, 0.2, 1, 7, 3); trunkGeo.translate(0, 0.5, 0);
-  { const p = trunkGeo.attributes.position; for (let i = 0; i < p.count; i++) { const y = p.getY(i); p.setX(i, p.getX(i) + Math.sin(y * 3.0) * 0.05); } trunkGeo.computeVertexNormals(); }
-  const trunkMat = paint(new THREE.MeshLambertMaterial({ color: '#4a3226' }), { freq: 2.0, amt: 0.15 });
-  const N = quality === 'low' ? 210 : quality === 'mid' ? 310 : 360;
+  ].map(v => { v.geo = v.geo.index ? v.geo.toNonIndexed() : v.geo; return v; }));
+  const leafMat = once('leafMat', () => paint(new THREE.MeshLambertMaterial({ vertexColors: true }), { freq: 1.3, amt: 0.14, trans: 0.55, rim: 0.22 }));
+  const trunkGeo = once('trunkGeo', () => { const g = new THREE.CylinderGeometry(0.09, 0.2, 1, 7, 3); g.translate(0, 0.5, 0);
+    const p = g.attributes.position; for (let i = 0; i < p.count; i++) { const y = p.getY(i); p.setX(i, p.getX(i) + Math.sin(y * 3.0) * 0.05); } g.computeVertexNormals(); return g; });
+  const trunkMat = once('trunkMat', () => paint(new THREE.MeshLambertMaterial({ color: '#4a3226' }), { freq: 2.0, amt: 0.15 }));
+  const N = Math.round((quality === 'low' ? 105 : quality === 'mid' ? 155 : 180) * dens);
   const meshes = variants.map(v => { const im = new THREE.InstancedMesh(v.geo, leafMat, N); im.count = 0; im.castShadow = true; im.receiveShadow = false; return im; });
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, N); trunks.castShadow = true;
   let nt = 0;
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), col = new THREE.Color();
-  const warm = ['#6a8a3c', '#88923e', '#a8963c', '#c08a3a', '#b8683a', '#9a5236', '#7a9a4a', '#5e8040'];
-  const cool = ['#3e6a4a', '#4a6e3e', '#355e48'];
+  const warm = o.warmPal || ['#6a8a3c', '#88923e', '#a8963c', '#c08a3a', '#b8683a', '#9a5236', '#7a9a4a', '#5e8040'];
+  const cool = o.coolPal || ['#3e6a4a', '#4a6e3e', '#355e48'];
   const up = new THREE.Vector3(0, 1, 0);
   for (let i = 0; i < N; i++) {
-    const u = R();
+    const u = u0 + (u1 - u0) * R();
     const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
     const side = R() < 0.5 ? -1 : 1;
     const W = riverHalfWidth(u);
-    const off = W + 4 + Math.pow(R(), 1.5) * 85;
+    const off = W + near + Math.pow(R(), 1.5) * far;
     const x = pt.x + tg.z * side * off, z = pt.z - tg.x * side * off;
     const h = terrainHeight(path, x, z);
     if (h < 0.5) continue;
     // keep the bridge abutments clear
-    if (Math.abs(u - 0.72) < 0.012 && off < W + 16) continue;
+    if (Math.abs(u - BRIDGE_U) < 0.005 && off < W + 16) continue;
+    if (FOOT_U.some(f => Math.abs(u - f) < 0.004) && off < W + 12) continue;
     const pick = R();
-    const vi = pick < 0.3 ? 0 : pick < 0.52 ? 1 : pick < 0.64 ? 2 : pick < 0.8 ? 3 : 4;
-    const scale = rr(1.5, 3.1) * (off > W + 40 ? 1.35 : 1);
+    const vi = pick < mix[0] ? 0 : pick < mix[1] ? 1 : pick < mix[2] ? 2 : pick < mix[3] ? 3 : 4;
+    const scale = rr(1.5, 3.1) * (off > W + 40 ? 1.35 : 1) * sizeK;
     const trunkH = scale * (vi === 3 ? rr(0.35, 0.55) : vi === 4 ? rr(0.4, 0.6) : rr(0.75, 1.2));
     q.setFromAxisAngle(up, R() * 6.28);
     p.set(x, h - 0.25, z); s.set(scale * 0.55, trunkH + scale * 0.5, scale * 0.55);
     trunks.setMatrixAt(nt++, m.compose(p, q, s));
-    if (vi === 4 || vi === 3) col.set(cool[Math.floor(R() * cool.length)]); else col.set(warm[Math.floor(R() * warm.length)]);
+    if (vi === 4 || vi === 3 || R() > warmK) col.set(cool[Math.floor(R() * cool.length)]); else col.set(warm[Math.floor(R() * warm.length)]);
     col.multiplyScalar(rr(0.85, 1.12));
     const im = meshes[vi];
     const cs = vi === 3 ? scale * 0.9 : scale;
@@ -503,8 +613,8 @@ export function makeTrees(path, quality) {
     im.setMatrixAt(im.count, m.compose(p, q, s)); im.setColorAt(im.count, col); im.count++;
   }
   trunks.count = nt;
-  meshes.forEach(im => { if (im.instanceColor) im.instanceColor.needsUpdate = true; group.add(im); });
-  group.add(trunks);
+  meshes.forEach(im => { if (im.instanceColor) im.instanceColor.needsUpdate = true; if (im.count) { im.computeBoundingSphere(); group.add(im); } });
+  if (nt) { trunks.computeBoundingSphere(); group.add(trunks); }
   return group;
 }
 
@@ -556,48 +666,51 @@ function swayMaterial(uniforms, o) {
   mat.customProgramCacheKey = () => 'sway' + JSON.stringify(o);
   return mat;
 }
-export function makeReeds(path, uniforms, quality) {
+export function makeReeds(path, uniforms, quality, o = {}) {
+  const u0 = o.u0 ?? 0, u1 = o.u1 ?? 1, dens = o.k ?? 1, gk = o.grass ?? 1, inland = o.inland ?? 0, hk = o.tall ?? 1, wade = o.wade ?? 3.5, tailK = o.tailK ?? 0.16, spread = o.spread ?? 1;
   const group = new THREE.Group(); group.name = 'reeds';
   const lowQ = quality === 'low';
-  const reedMat = swayMaterial(uniforms, { freq: 2.0, amt: 0.1, trans: 0.7, rim: 0.25 });
-  const reedGeo = bladeGeo(4, 0.085, 0.35, '#4a4428', false);
-  const tailGeo = bladeGeo(4, 0.03, 0.05, '#3e3a22', true);
-  const grassGeo = bladeGeo(3, 0.06, 0.25, '#2e3a1a', false);
-  const N = lowQ ? 1800 : 2800;
-  const reeds = new THREE.InstancedMesh(reedGeo, reedMat, N), tails = new THREE.InstancedMesh(tailGeo, reedMat, Math.floor(N / 5));
+  const reedMat = once('reedMat', () => swayMaterial(uniforms, { freq: 2.0, amt: 0.1, trans: 0.7, rim: 0.25 }));
+  const reedGeo = once('reedGeo', () => bladeGeo(4, 0.085, 0.35, '#4a4428', false));
+  const tailGeo = once('tailGeo', () => bladeGeo(4, 0.03, 0.05, '#3e3a22', true));
+  const grassGeo = once('grassGeo', () => bladeGeo(3, 0.06, 0.25, '#2e3a1a', false));
+  const N = Math.max(8, Math.round((lowQ ? 900 : 1400) * dens));
+  const reeds = new THREE.InstancedMesh(reedGeo, reedMat, N), tails = new THREE.InstancedMesh(tailGeo, reedMat, Math.floor(N * Math.max(0.2, tailK * 1.3)));
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), col = new THREE.Color(), e = new THREE.Euler();
-  const tints = ['#d7b26a', '#c9a35a', '#e6c88a', '#a8a05a', '#b98a4a', '#8e9a52'];
+  const tints = o.tints || ['#d7b26a', '#c9a35a', '#e6c88a', '#a8a05a', '#b98a4a', '#8e9a52'];
   let n = 0, nt = 0;
-  const clusters = lowQ ? 120 : 170;
+  const clusters = Math.round((lowQ ? 60 : 85) * dens);
   for (let c = 0; c < clusters && n < N; c++) {
-    const u = R(); const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
+    const u = u0 + (u1 - u0) * R(); const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
+    if (Math.abs(u - BRIDGE_U) < 0.004 || FOOT_U.some(f => Math.abs(u - f) < 0.003)) continue;
     const side = R() < 0.5 ? -1 : 1; const W = riverHalfWidth(u);
-    const off = W + rr(-3.5, 1.5);
+    const off = W + rr(-wade, 1.5) + Math.pow(R(), 2) * inland;
     const cx = pt.x + tg.z * side * off, cz = pt.z - tg.x * side * off;
-    const k = 10 + Math.floor(R() * 18);
+    const k = Math.round((10 + Math.floor(R() * 18)) * spread);
     for (let j = 0; j < k && n < N; j++) {
-      const x = cx + rr(-2.5, 2.5) + tg.x * rr(-4, 4), z = cz + rr(-2.5, 2.5) + tg.z * rr(-4, 4);
+      const x = cx + rr(-2.5, 2.5) * spread + tg.x * rr(-4, 4) * spread, z = cz + rr(-2.5, 2.5) * spread + tg.z * rr(-4, 4) * spread;
       const h = Math.max(terrainHeight(path, x, z), -0.6);
-      if (h > 2.5) continue;
+      if (h > 2.5 + inland * 0.1) continue;
       p.set(x, h - 0.1, z); q.setFromEuler(e.set(rr(-0.15, 0.15), R() * 6.28, rr(-0.15, 0.15)));
-      if (R() < 0.16 && nt < tails.count) {
-        const hh = rr(1.6, 2.6); s.set(1, hh, 1);
-        tails.setMatrixAt(nt, m.compose(p, q, s)); tails.setColorAt(nt++, col.set('#d8c890').multiplyScalar(rr(0.85, 1.05)));
+      if (R() < tailK && nt < tails.count) {
+        const hh = rr(1.6, 2.6) * hk; s.set(1, hh, 1);
+        tails.setMatrixAt(nt, m.compose(p, q, s)); tails.setColorAt(nt++, col.set(o.tailCol || '#d8c890').multiplyScalar(rr(0.85, 1.05)));
       } else {
-        const hh = rr(1.4, 3.0); s.set(rr(0.8, 1.4), hh, 1);
+        const hh = rr(1.4, 3.0) * hk; s.set(rr(0.8, 1.4), hh, 1);
         reeds.setMatrixAt(n, m.compose(p, q, s)); reeds.setColorAt(n++, col.set(tints[Math.floor(R() * tints.length)]));
       }
     }
   }
-  reeds.count = n; tails.count = nt; reeds.frustumCulled = false; tails.frustumCulled = false;
-  group.add(reeds, tails);
+  reeds.count = n; tails.count = nt;
+  if (n) { reeds.computeBoundingSphere(); reeds.boundingSphere.radius += 3; group.add(reeds); }
+  if (nt) { tails.computeBoundingSphere(); tails.boundingSphere.radius += 3; group.add(tails); }
   // bank grass tufts
-  const G = lowQ ? 2200 : 6500;
-  const grass = new THREE.InstancedMesh(grassGeo, swayMaterial(uniforms, { freq: 1.5, amt: 0.12, trans: 0.5, rim: 0.15 }), G);
-  const gt = ['#9aa04a', '#b4a650', '#7e9440', '#c8a85a', '#a88a44', '#6e8a3e'];
+  const G = Math.max(14, Math.round((lowQ ? 1100 : 3250) * gk));
+  const grass = new THREE.InstancedMesh(grassGeo, once('grassMat', () => swayMaterial(uniforms, { freq: 1.5, amt: 0.12, trans: 0.5, rim: 0.15 })), G);
+  const gt = o.grassPal || ['#9aa04a', '#b4a650', '#7e9440', '#c8a85a', '#a88a44', '#6e8a3e'];
   let ng = 0;
   for (let c = 0; c < G / 14 && ng < G; c++) {
-    const u = R(); const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
+    const u = u0 + (u1 - u0) * R(); const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
     const side = R() < 0.5 ? -1 : 1; const W = riverHalfWidth(u);
     const off = W + 1.5 + Math.pow(R(), 1.4) * 26;
     const cx = pt.x + tg.z * side * off, cz = pt.z - tg.x * side * off;
@@ -611,17 +724,19 @@ export function makeReeds(path, uniforms, quality) {
       grass.setMatrixAt(ng, m.compose(p, q, s)); grass.setColorAt(ng++, col.copy(base).multiplyScalar(rr(0.85, 1.12)));
     }
   }
-  grass.count = ng; grass.frustumCulled = false; group.add(grass); group.userData.grass = grass;
+  grass.count = ng; group.userData.grass = grass;
+  if (ng) { grass.computeBoundingSphere(); grass.boundingSphere.radius += 2; group.add(grass); }
   return group;
 }
 
 // small wildflowers on the banks (static points, normal blending)
-export function makeFlowers(path, quality, uniforms) {
-  const N = quality === 'low' ? 700 : 1800;
+export function makeFlowers(path, quality, uniforms, o = {}) {
+  const u0 = o.u0 ?? 0, u1 = o.u1 ?? 1;
+  const N = Math.max(9, Math.round((quality === 'low' ? 350 : 900) * (o.k ?? 1)));
   const pos = [], colr = [], seed = [];
-  const pal = [[1.0, 0.86, 0.62], [1.0, 0.62, 0.55], [0.95, 0.95, 0.85], [0.95, 0.7, 0.85], [1.0, 0.78, 0.35]];
+  const pal = o.pal || [[1.0, 0.86, 0.62], [1.0, 0.62, 0.55], [0.95, 0.95, 0.85], [0.95, 0.7, 0.85], [1.0, 0.78, 0.35]];
   for (let c = 0; c < N / 9; c++) {
-    const u = R(); const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
+    const u = u0 + (u1 - u0) * R(); const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
     const side = R() < 0.5 ? -1 : 1; const W = riverHalfWidth(u);
     const off = W + 2 + Math.pow(R(), 1.3) * 20;
     const cx = pt.x + tg.z * side * off, cz = pt.z - tg.x * side * off;
@@ -636,65 +751,71 @@ export function makeFlowers(path, quality, uniforms) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(colr, 3));
   g.setAttribute('seed', new THREE.Float32BufferAttribute(seed, 1));
-  const mat = new THREE.ShaderMaterial({
+  const mat = once('flowerMat', () => new THREE.ShaderMaterial({
     uniforms: { pr: uniforms.pr, light: { value: new THREE.Color(1, 1, 1) } }, transparent: false, depthWrite: true,
     vertexShader: `attribute vec3 color; attribute float seed; uniform float pr; varying vec3 vC; void main(){ vC = color; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv; gl_PointSize = clamp(2.6 * pr * (40.0 / -mv.z) * (0.7 + seed * 0.6), 0.0, 7.0 * pr); }`,
     fragmentShader: `uniform vec3 light; varying vec3 vC; void main(){ vec2 d = gl_PointCoord - 0.5; float r = length(d); if (r > 0.5) discard; float petal = 0.75 + 0.25 * cos(atan(d.y, d.x) * 5.0); if (r > 0.5 * petal) discard; vec3 c = vC * light * (1.05 - r * 0.7); gl_FragColor = vec4(c, 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
     }`,
-  });
+  }));
+  g.computeBoundingSphere();
   const pts = new THREE.Points(g, mat); pts.name = 'flowers';
   return pts;
 }
 
 // lily pads drifting in the shallows
-export function makeLilies(path, quality) {
-  const shape = new THREE.CircleGeometry(1, 14, 0.35, Math.PI * 2 - 0.35); shape.rotateX(-Math.PI / 2);
-  const mat = paint(new THREE.MeshLambertMaterial({ color: '#ffffff', emissive: new THREE.Color('#2c2a14') }), { freq: 3.0, amt: 0.18, rim: 0.5 });
-  const N = quality === 'low' ? 160 : 320;
+export function makeLilies(path, quality, o = {}) {
+  const u0 = o.u0 ?? 0.03, u1 = o.u1 ?? 0.97, inner = o.inner ?? 0;
+  const shape = once('lilyGeo', () => { const g = new THREE.CircleGeometry(1, 14, 0.35, Math.PI * 2 - 0.35); g.rotateX(-Math.PI / 2); return g; });
+  const mat = once('lilyMat', () => paint(new THREE.MeshLambertMaterial({ color: '#ffffff', emissive: new THREE.Color('#2c2a14') }), { freq: 3.0, amt: 0.18, rim: 0.5 }));
+  const N = Math.max(8, Math.round((quality === 'low' ? 80 : 160) * (o.k ?? 1)));
   const pads = new THREE.InstancedMesh(shape, mat, N);
-  const bloomGeo = new THREE.ConeGeometry(0.16, 0.22, 6, 1, true); bloomGeo.translate(0, 0.1, 0);
-  const blooms = new THREE.InstancedMesh(bloomGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }), 60);
+  const bloomGeo = once('bloomGeo', () => { const g = new THREE.ConeGeometry(0.16, 0.22, 6, 1, true); g.translate(0, 0.1, 0); return g; });
+  const NB = Math.round(N * (o.bloom ?? 0.19));
+  const blooms = new THREE.InstancedMesh(bloomGeo, once('bloomMat', () => new THREE.MeshBasicMaterial({ color: 0xffffff })), Math.max(1, NB));
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), col = new THREE.Color();
   let n = 0, nb = 0;
   for (let c = 0; c < N / 8 && n < N; c++) {
-    const u = rr(0.03, 0.97); const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
+    const u = rr(u0, u1); const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
     const side = R() < 0.5 ? -1 : 1; const W = riverHalfWidth(u);
-    const off = W - rr(2.0, 5.5);
+    const off = W - rr(2.0, 5.5) - Math.pow(R(), 1.5) * inner;
     const cx = pt.x + tg.z * side * off, cz = pt.z - tg.x * side * off;
     for (let j = 0; j < 8 && n < N; j++) {
       const x = cx + rr(-2.2, 2.2) + tg.x * rr(-3, 3), z = cz + rr(-2.2, 2.2) + tg.z * rr(-3, 3);
       p.set(x, 0.04, z); q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), R() * 6.28); const sc = rr(0.25, 0.55); s.set(sc, 1, sc);
       pads.setMatrixAt(n, m.compose(p, q, s)); pads.setColorAt(n++, col.set(R() < 0.7 ? '#86a450' : '#a0aa52').multiplyScalar(rr(0.85, 1.15)));
-      if (R() < 0.12 && nb < 60) {
+      if (R() < 0.12 * (o.bloom ?? 0.19) / 0.19 && nb < NB) {
         p.y = 0.06; s.setScalar(rr(0.8, 1.2));
         blooms.setMatrixAt(nb, m.compose(p, q, s)); blooms.setColorAt(nb++, col.set(R() < 0.6 ? '#ffb0b8' : '#fff0e0'));
       }
     }
   }
-  pads.count = n; blooms.count = nb;
+  pads.count = n; blooms.count = nb; pads.computeBoundingSphere(); if (nb) blooms.computeBoundingSphere();
   const g = new THREE.Group(); g.add(pads, blooms); g.name = 'lilies';
   g.userData.blooms = blooms;
   return g;
 }
 
 // ---------- rocks ----------
-export function makeRocks(path) {
-  const geo = new THREE.IcosahedronGeometry(1, 1);
-  { const p = geo.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i); const k = 1 + (vnoise(x * 2 + 5, z * 2 + y) - 0.5) * 0.5; p.setXYZ(i, x * k, y * k, z * k); } geo.computeVertexNormals(); }
-  const mesh = new THREE.InstancedMesh(geo, paint(new THREE.MeshLambertMaterial({ color: '#7a6a62' }), { freq: 1.5, amt: 0.2, rim: 0.2 }), 120);
+export function makeRocks(path, o = {}) {
+  const u0 = o.u0 ?? 0, u1 = o.u1 ?? 1, cnt = Math.max(1, Math.round(60 * (o.k ?? 1))), tall = o.tall ?? 0;
+  const geo = once('rockGeo', () => { const geo = new THREE.IcosahedronGeometry(1, 1);
+    const p = geo.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i); const k = 1 + (vnoise(x * 2 + 5, z * 2 + y) - 0.5) * 0.5; p.setXYZ(i, x * k, y * k, z * k); } geo.computeVertexNormals(); return geo; });
+  const mesh = new THREE.InstancedMesh(geo, once('rockMat', () => paint(new THREE.MeshLambertMaterial({ color: '#7a6a62' }), { freq: 1.5, amt: 0.2, rim: 0.2 })), cnt);
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), col = new THREE.Color();
   let n = 0;
-  for (let i = 0; i < 120; i++) {
-    const u = R(); const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
-    const side = R() < 0.5 ? -1 : 1; const off = riverHalfWidth(u) + rr(-2, 3);
+  for (let i = 0; i < cnt; i++) {
+    const u = u0 + (u1 - u0) * R(); const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
+    if (Math.abs(u - BRIDGE_U) < 0.004 || FOOT_U.some(f => Math.abs(u - f) < 0.003)) continue;
+    const side = R() < 0.5 ? -1 : 1; const pillar = R() < tall; const off = riverHalfWidth(u) + (pillar ? rr(1, 14) : rr(-2, 3));
     const x = pt.x + tg.z * side * off, z = pt.z - tg.x * side * off;
     p.set(x, Math.max(terrainHeight(path, x, z), -0.3) - 0.2, z);
     q.setFromEuler(new THREE.Euler(R() * 3, R() * 3, R() * 3)); const sc = rr(0.4, 1.4); s.set(sc * rr(1, 1.6), sc * 0.6, sc);
-    mesh.setMatrixAt(n, m.compose(p, q, s)); mesh.setColorAt(n++, col.set(R() < 0.5 ? '#7a6a62' : '#6a6a58').multiplyScalar(rr(0.85, 1.1)));
+    if (pillar) { q.setFromEuler(new THREE.Euler(rr(-0.12, 0.12), R() * 3, rr(-0.12, 0.12))); const w = rr(1.2, 2.6); s.set(w, rr(4, 11), w * rr(0.8, 1.2)); }
+    mesh.setMatrixAt(n, m.compose(p, q, s)); mesh.setColorAt(n++, col.set(o.pal ? o.pal[Math.floor(R() * o.pal.length)] : R() < 0.5 ? '#7a6a62' : '#6a6a58').multiplyScalar(rr(0.85, 1.1)));
   }
-  mesh.count = n; mesh.castShadow = true; mesh.receiveShadow = true;
+  mesh.count = n; mesh.castShadow = true; mesh.receiveShadow = true; mesh.computeBoundingSphere();
   return mesh;
 }
 
@@ -750,16 +871,18 @@ export function lanternMesh(glowColor) {
 }
 
 // ---------- wooden bridge ----------
-export function makeBridge(path, u) {
+// o.old = weathered footbridge (no paint, no lanterns, lower arch)
+export function makeBridge(path, u, o = {}) {
   const g = new THREE.Group();
   const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
   g.position.set(pt.x, 0, pt.z);
-  g.rotation.y = Math.atan2(tg.x, tg.z);
-  const half = riverHalfWidth(u) + 9;
-  const wood = paint(new THREE.MeshLambertMaterial({ color: '#8a5a3c' }), { freq: 2.2, amt: 0.16, rim: 0.2 });
-  const dark = paint(new THREE.MeshLambertMaterial({ color: '#5a3a2a' }), { freq: 2.2, amt: 0.14 });
-  const red = paint(new THREE.MeshLambertMaterial({ color: '#a8402e' }), { freq: 2.2, amt: 0.14, rim: 0.25 });
-  const arcY = (x) => 3.2 + 5.2 * Math.cos((x / half) * Math.PI * 0.5);
+  g.rotation.y = Math.atan2(tg.x, tg.z) + (o.skew ?? 0);
+  const half = riverHalfWidth(u) + (o.old ? 7 : 9);
+  const wood = once('brWood', () => paint(new THREE.MeshLambertMaterial({ color: '#8a5a3c' }), { freq: 2.2, amt: 0.16, rim: 0.2 }));
+  const dark = once('brDark', () => paint(new THREE.MeshLambertMaterial({ color: '#5a3a2a' }), { freq: 2.2, amt: 0.14 }));
+  const red = o.old ? once('brGrey', () => paint(new THREE.MeshLambertMaterial({ color: '#7a624a' }), { freq: 2.2, amt: 0.18, rim: 0.25 }))
+    : once('brRed', () => paint(new THREE.MeshLambertMaterial({ color: '#a8402e' }), { freq: 2.2, amt: 0.14, rim: 0.25 }));
+  const arcY = o.old ? (x) => 3.4 + 3.4 * Math.cos((x / half) * Math.PI * 0.5) : (x) => 3.2 + 5.2 * Math.cos((x / half) * Math.PI * 0.5);
   const planks = Math.round(half * 2 / 0.9);
   const plankGeo = new THREE.BoxGeometry(0.82, 0.22, 3.6);
   const pm = new THREE.InstancedMesh(plankGeo, wood, planks);
@@ -767,8 +890,8 @@ export function makeBridge(path, u) {
   for (let i = 0; i < planks; i++) {
     const x = -half + (i + 0.5) * (half * 2 / planks), y = arcY(x);
     const slope = (arcY(x + 0.1) - arcY(x - 0.1)) / 0.2;
-    p.set(x, y, (R() - 0.5) * 0.08); q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.atan(slope) + (R() - 0.5) * 0.03);
-    pm.setMatrixAt(i, m.compose(p, q, s)); pm.setColorAt(i, col.set('#8a5a3c').multiplyScalar(0.8 + R() * 0.35));
+    p.set(x, y + (o.old ? (R() - 0.5) * 0.06 : 0), (R() - 0.5) * 0.08); q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.atan(slope) + (R() - 0.5) * (o.old ? 0.08 : 0.03));
+    pm.setMatrixAt(i, m.compose(p, q, s)); pm.setColorAt(i, col.set(o.old ? '#9a7a58' : '#8a5a3c').multiplyScalar(0.75 + R() * 0.4));
   }
   g.add(pm);
   for (const z of [-1.75, 1.75]) {
@@ -781,7 +904,7 @@ export function makeBridge(path, u) {
     g.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(rail2), 48, 0.05, 5), red));
   }
   const postGeo = new THREE.BoxGeometry(0.16, 1.2, 0.16);
-  const postN = 22; const posts = new THREE.InstancedMesh(postGeo, red, postN * 2);
+  const postN = o.old ? 14 : 22; const posts = new THREE.InstancedMesh(postGeo, red, postN * 2);
   const capG = new THREE.ConeGeometry(0.15, 0.18, 4); const caps = new THREE.InstancedMesh(capG, dark, postN * 2);
   let n = 0; const lanternSpots = [];
   for (let i = 0; i < postN; i++) {
@@ -797,7 +920,7 @@ export function makeBridge(path, u) {
   // cross bracing between piers
   for (const x of [-half * 0.45, half * 0.45]) { const br = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 3.2), dark); br.position.set(x, 1.2, 0); g.add(br); }
   const lanterns = [];
-  for (const sp of lanternSpots) {
+  if (!o.old) for (const sp of lanternSpots) {
     const L = lanternMesh(new THREE.Color(3.2, 1.25, 0.55));
     L.scale.setScalar(0.75);
     L.position.set(sp.x, sp.y - 1.0, sp.z + Math.sign(sp.z) * 0.35);
@@ -809,6 +932,24 @@ export function makeBridge(path, u) {
   g.userData.lanterns = lanterns;
   g.userData.top = arcY(0);
   return g;
+}
+
+// ---------- soft cloud banks resting on the water (dawn cloud sea) ----------
+export function makeCloudBanks(path, u0, u1, count) {
+  const geo = once('cloudGeo', () => { const g = blobClump(71, 9, { height: 0.6, spread: 1.6, size: 0.75, squash: 0.55, detail: 1 }); return g.index ? g.toNonIndexed() : g; });
+  const mat = once('cloudMat', () => paint(new THREE.MeshLambertMaterial({ vertexColors: true, emissive: new THREE.Color('#ffd8d0'), emissiveIntensity: 0.35 }), { freq: 0.6, amt: 0.1, trans: 0.8, rim: 0.4 }));
+  const im = new THREE.InstancedMesh(geo, mat, count);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), col = new THREE.Color();
+  let n = 0;
+  for (let i = 0; i < count; i++) {
+    const u = u0 + (u1 - u0) * Math.pow(R(), 0.7); const pt = path.curve.getPointAt(Math.min(u, 1)), tg = path.curve.getTangentAt(Math.min(u, 1));
+    const W = riverHalfWidth(Math.min(u, 1)); const side = R() < 0.5 ? -1 : 1; const off = rr(10, W + 50);
+    const x = pt.x + tg.z * side * off, z = pt.z - tg.x * side * off - rr(0, 60);
+    const sc = rr(6, 16); p.set(x, rr(-0.8, 1.6), z); q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), R() * 6.28); s.set(sc * rr(1.3, 2.2), sc * rr(0.5, 0.8), sc);
+    im.setMatrixAt(n, m.compose(p, q, s)); im.setColorAt(n++, col.set(R() < 0.5 ? '#fff0ea' : '#ffe0d0'));
+  }
+  im.count = n; im.computeBoundingSphere(); im.name = 'clouds';
+  return im;
 }
 
 // ---------- floating river lanterns (instanced) ----------

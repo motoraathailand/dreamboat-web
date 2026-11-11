@@ -6,12 +6,12 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
-import { PU } from './paint.js?v=5';
-import * as W from './world.js?v=5';
-import { Boat } from './boat.js?v=5';
-import { ZONES, zoneParamsAt } from './zones.js?v=5';
-import { DreamAudio } from './audio.js?v=5';
-import { LANGS, detectLang, setLang, getLang, t } from './i18n.js?v=5';
+import { PU } from './paint.js?v=6';
+import * as W from './world.js?v=6';
+import { Boat } from './boat.js?v=6';
+import { ZONES, zoneParamsAt } from './zones.js?v=6';
+import { DreamAudio } from './audio.js?v=6';
+import { LANGS, detectLang, setLang, getLang, t } from './i18n.js?v=6';
 
 const qs = new URLSearchParams(location.search);
 const SHOT = qs.has('shot');
@@ -40,8 +40,10 @@ const shared = { time: { value: 0 }, pr: { value: pixelRatio } };
 // ---------- world ----------
 const T0 = performance.now();
 const path = W.makePath();
-scene.add(W.makeTerrain(path, QUALITY));
-const hmap = W.makeHeightTex(path, QUALITY);
+const startZ0 = (() => { let u0 = 0; if (qs.has('zone')) u0 = (Math.max(1, Math.min(ZONES.length, parseInt(qs.get('zone')) || 1)) - 1) / ZONES.length; if (qs.has('u')) u0 = parseFloat(qs.get('u')) || 0; return path.curve.getPointAt(Math.min(0.999, u0)).z; })();
+const terrain = W.makeTerrain(path, QUALITY, startZ0); scene.add(terrain);
+const hmap = W.makeHeightTex(path, QUALITY, startZ0);
+let worldDone = false, rush = 0;
 const mountains = W.makeMountains(path); scene.add(mountains);
 const sky = W.makeSky(); scene.add(sky);
 const reflScale = QUALITY === 'low' ? 0.35 : 0.5;
@@ -51,19 +53,50 @@ const water = W.makeWater(reflSize(), hmap); scene.add(water);
   const orb = water.onBeforeRender.bind(water);
   water.onBeforeRender = (...a) => { const u = sky.material.uniforms.stars, v = u.value; u.value = 0; orb(...a); u.value = v; };
 }
-scene.add(W.makeTrees(path, QUALITY));
-const reedsGrp = W.makeReeds(path, shared, QUALITY); scene.add(reedsGrp);
-const flowers = W.makeFlowers(path, QUALITY, shared); scene.add(flowers);
-const lilies = W.makeLilies(path, QUALITY); scene.add(lilies);
-scene.add(W.makeRocks(path));
-scene.add(W.makeHut(path, 0.2, 1), W.makeHut(path, 0.34, -1));
-const BRIDGE_U = 0.72;
-const bridge = W.makeBridge(path, BRIDGE_U); scene.add(bridge);
+// detail-only objects live on layer 1: drawn by the main camera but skipped by the water reflection pass
+const DETAIL = 1; camera.layers.enable(DETAIL);
+const onDetail = (o) => o.traverse(c => c.layers.set(DETAIL));
+
+// ---- per-place props: each place is its own group, shown only near the boat (keeps phones fast) ----
+const NZ = ZONES.length, ZL = 1 / NZ;
+const ZP = [
+  { trees: {}, reeds: {}, flowers: {}, lilies: {}, rocks: {}, huts: [[0.05, 1], [0.085, -1]] },
+  { trees: { k: 0.35, near: 22, far: 70 }, reeds: { k: 3.6, inland: 16, tall: 1.35, grass: 1.4, wade: 5.5, tailK: 0.3, spread: 1.3, tailCol: '#f0dcae', tints: ['#e6c070', '#d8b060', '#f0d090', '#c8a050', '#e0b868', '#b89848'], grassPal: ['#c8b058', '#d8c068', '#b8a050', '#c8a85a'] },
+    flowers: { k: 0.4 }, lilies: { k: 0.6 }, rocks: { k: 0.4 } },
+  { trees: { k: 1.1, mix: [0.45, 0.7, 0.85, 0.93], warmPal: ['#8a9a50', '#a8a058', '#c89a6a', '#b07a6a', '#7a9a5a', '#c08870'] }, reeds: { k: 0.8 },
+    flowers: { k: 1.5, pal: [[1.0, 0.75, 0.8], [0.98, 0.95, 0.9], [0.95, 0.7, 0.9], [1.0, 0.85, 0.6]] }, lilies: { k: 1.5, bloom: 0.3 }, rocks: { k: 0.6 }, huts: [[0.29, -1], [0.336, 1]], foot: true },
+  { trees: { k: 1.2, near: 3, mix: [0.05, 0.1, 0.15, 0.5], warm: 0.2, coolPal: ['#4a5a5a', '#56665e', '#3e4e52', '#5a6a66'] }, reeds: { k: 0.5, grass: 0.7 },
+    flowers: { k: 0.05 }, lilies: { k: 0.3 }, rocks: { k: 2.4, tall: 0.45, pal: ['#8a8a92', '#7a7c86', '#9494a0'] } },
+  { trees: { k: 1.8, near: 2, far: 60, mix: [0.35, 0.6, 0.7, 0.85], warm: 0.75, size: 1.1, warmPal: ['#3e6a4a', '#4a7a44', '#2e5a40', '#5a7a3a', '#3a6650'], coolPal: ['#2a4a3e', '#30503a'] },
+    reeds: { k: 0.7, grass: 1.2, grassPal: ['#5a8a4a', '#4a7a44', '#6a9a50', '#3e6a40'] }, flowers: { k: 0.7, pal: [[0.75, 1.0, 0.6], [0.6, 0.8, 1.0], [1.0, 0.95, 0.7]] }, lilies: { k: 0.5 }, rocks: { k: 0.8 } },
+  { trees: {}, reeds: {}, flowers: { k: 0.6 }, lilies: {}, rocks: {} },
+  { trees: { k: 0.8, near: 6, far: 60 }, reeds: { k: 0.9 }, flowers: { k: 0.3 }, lilies: { k: 3.0, inner: 16, bloom: 0.45 }, rocks: { k: 0.6 } },
+  { trees: { k: 0.4, near: 10 }, reeds: { k: 0.5, grass: 0.6 }, flowers: { k: 0.5 }, lilies: { k: 0.6 }, rocks: { k: 0.3 }, clouds: QUALITY === 'low' ? 40 : 70 },
+];
+const zoneGroups = [];
+let flowerMat = null, lilyBlooms = null, cloudMat = null, cloudMesh = null;
+ZP.forEach((zp, i) => {
+  const g = new THREE.Group(); g.name = 'zone' + (i + 1);
+  const r = { u0: i * ZL, u1: (i + 1) * ZL };
+  if (i === NZ - 1) r.u1 = 0.995;
+  g.add(W.makeTrees(path, QUALITY, { ...r, ...zp.trees }));
+  const reeds = W.makeReeds(path, shared, QUALITY, { ...r, ...zp.reeds }); g.add(reeds); if (reeds.userData.grass) onDetail(reeds.userData.grass);
+  const fl = W.makeFlowers(path, QUALITY, shared, { ...r, ...zp.flowers }); g.add(fl); onDetail(fl); flowerMat = fl.material;
+  const li = W.makeLilies(path, QUALITY, { ...r, ...zp.lilies }); g.add(li); onDetail(li); lilyBlooms = li.userData.blooms;
+  g.add(W.makeRocks(path, { ...r, ...zp.rocks }));
+  for (const [u, side] of zp.huts || []) g.add(W.makeHut(path, u, side));
+  if (zp.foot) W.FOOT_U.forEach((u, k) => g.add(W.makeBridge(path, u, { old: true, skew: (k - 1) * 0.12 })));
+  if (zp.clouds) { const c = W.makeCloudBanks(path, i * ZL + 0.01, 1.04, zp.clouds); g.add(c); cloudMat = c.material; cloudMesh = c; }
+  g.userData.u0 = i * ZL; g.userData.u1 = (i + 1) * ZL;
+  zoneGroups.push(g); scene.add(g);
+});
+const BRIDGE_U = W.BRIDGE_U;
+const bridge = W.makeBridge(path, BRIDGE_U); scene.add(bridge); zoneGroups[5].add(bridge);
 const bridgeLights = [];
 for (const x of [-6, 6]) { const l = new THREE.PointLight('#ff9850', 0, 26, 1.5); l.position.set(x, 9, 0); bridge.add(l); bridgeLights.push(l); }
-const floating = W.makeFloatingLanterns(path, 0.46, 1.0, QUALITY === 'low' ? 70 : 110); scene.add(floating.paper, floating.base);
+const floating = W.makeFloatingLanterns(path, 0.61, 0.765, QUALITY === 'low' ? 70 : 110); scene.add(floating.paper, floating.base);
 const paperColors = []; for (let i = 0; i < floating.items.length; i++) { const c = new THREE.Color(); floating.paper.getColorAt(i, c); paperColors.push(c); }
-const motes = W.makePoints(QUALITY === 'low' ? 140 : 260, { x: 45, y0: 0.6, y1: 9, z: 45 }, 'motes', shared); scene.add(motes);
+const motes = W.makePoints(QUALITY === 'low' ? 160 : 300, { x: 45, y0: 0.6, y1: 9, z: 45 }, 'motes', shared); scene.add(motes);
 const skyL = W.makePoints(70, { x: 220, y0: 10, y1: 120, z: 220 }, 'sky', shared); scene.add(skyL);
 skyL.material.uniforms.color.value.set(1.6, 0.75, 0.3);
 const petals = W.makePetals(QUALITY === 'low' ? 50 : QUALITY === 'mid' ? 80 : 130, shared); scene.add(petals);
@@ -78,10 +111,7 @@ if (SHADOWS) {
 }
 
 const boat = new Boat(); boat.bobMul = qs.has('bob') ? parseFloat(qs.get('bob')) || 3 : 1; scene.add(boat.root);
-// detail-only objects live on layer 1: drawn by the main camera but skipped by the water reflection pass
-const DETAIL = 1; camera.layers.enable(DETAIL);
-const onDetail = (o) => o.traverse(c => c.layers.set(DETAIL));
-onDetail(flowers); onDetail(birds); onDetail(lilies); onDetail(petals); onDetail(motes); onDetail(reedsGrp.userData.grass);
+onDetail(birds); onDetail(petals); onDetail(motes);
 window.__buildMs = performance.now() - T0;
 
 // ---------- post ----------
@@ -217,9 +247,17 @@ addEventListener('resize', resize); resize();
 const ST = { mode: 'title', s: 0, speed: 0, rowing: false, ended: false, endTimer: 0, zoneShown: -1 };
 const BASE = 2.6, ROW_MAX = 7.0;
 let startU = 0;
-if (qs.has('zone')) startU = qs.get('zone') === '2' ? 0.6 : 0.03;
+const zoneStartU = (i) => (i <= 0 ? 0 : ZONES[i].start + 0.02);
+if (qs.has('zone')) startU = zoneStartU(Math.max(0, Math.min(ZONES.length - 1, (parseInt(qs.get('zone')) || 1) - 1)));
 if (qs.has('u')) startU = parseFloat(qs.get('u')) || 0;
 ST.s = startU * path.L;
+
+// progress: highest place reached (0-based), saved on this device
+let reached = 0;
+try { reached = Math.max(0, Math.min(ZONES.length - 1, parseInt(localStorage.getItem('dreamboat.reached') || '0') || 0)); } catch (e) {}
+if (qs.has('unlock')) reached = ZONES.length - 1;
+if (qs.has('reached')) reached = Math.max(0, Math.min(ZONES.length - 1, (parseInt(qs.get('reached')) || 1) - 1)); // debug: preview progress
+function markReached(i) { if (i > reached) { reached = i; try { localStorage.setItem('dreamboat.reached', String(i)); } catch (e) {} } }
 
 const audio = new DreamAudio();
 try { audio.muted = localStorage.getItem('dreamboat.muted') === '1'; } catch (e) {}
@@ -264,6 +302,8 @@ function refreshTexts() {
   const h = isTouch ? t('hintTouch') : t('hintKeys');
   hint.textContent = h; $('startHint').textContent = h;
   if (ST.zoneShown >= 0) setZoneTitle(ST.zoneShown, false);
+  buildPlaces();
+  $('startPlacesBtn').classList.toggle('hidden', reached < 1);
   const menu = $('langMenu'); menu.innerHTML = '';
   for (const L of LANGS) { const b = document.createElement('button'); b.textContent = L.label; b.className = L.code === getLang() ? 'on' : ''; b.onclick = () => { setLang(L.code); refreshTexts(); menu.classList.add('hidden'); }; menu.appendChild(b); }
 }
@@ -284,19 +324,49 @@ function setZoneTitle(i, show = true) {
 function startGame() {
   audio.start(); audio.setMuted(audio.muted);
   $('startScreen').classList.add('hidden');
-  ST.mode = 'play'; ST.ended = false; ST.endTimer = 0;
+  ST.mode = 'play'; ST.ended = false; ST.endTimer = 0; ST.endShown = false;
   rowBtn.classList.remove('hidden'); hint.classList.remove('hidden');
   setTimeout(() => hint.classList.add('hidden'), 9000);
   ST.zoneShown = -1;
 }
 $('startBtn').onclick = startGame;
-$('againBtn').onclick = () => {
-  fade.classList.remove('off');
+// travel to a place (0 = from the very start) with a soft fade
+function sailFrom(i) {
+  audio.start(); // inside the click so mobile browsers allow sound
+  fade.classList.remove('off'); rush = 2.4; // finish any unbuilt terrain while the screen is dark
   setTimeout(() => {
-    ST.s = 0; ST.speed = 0; boatPos.set(0, 0, 0); ripIdx = 0; $('endScreen').classList.add('hidden'); audio.fadeOutEnd(false);
+    ST.s = zoneStartU(i) * path.L; ST.speed = 0; ripIdx = 0;
+    ['endScreen', 'placeScreen', 'startScreen'].forEach(id => $(id).classList.add('hidden')); audio.fadeOutEnd(false);
     camInit = false; startGame(); fade.classList.add('off');
   }, 2600);
-};
+}
+$('againBtn').onclick = () => sailFrom(0);
+$('placeStartBtn').onclick = () => sailFrom(0);
+let placesFrom = 'endScreen';
+function openPlaces(from) { placesFrom = from; buildPlaces(); zt.classList.remove('show'); $(from).classList.add('hidden'); $('placeScreen').classList.remove('hidden'); }
+$('endPlacesBtn').onclick = () => openPlaces('endScreen');
+$('startPlacesBtn').onclick = () => openPlaces('startScreen');
+$('placeBackBtn').onclick = () => { $('placeScreen').classList.add('hidden'); $(placesFrom).classList.remove('hidden'); };
+// place cards: a tiny painted thumbnail from each place's own palette
+function buildPlaces() {
+  const grid = $('placeGrid'); grid.innerHTML = '';
+  const hx = (c) => '#' + c.getHexString();
+  ZONES.forEach((z, i) => {
+    const open = i <= reached;
+    const b = document.createElement('button'); b.className = 'pcard' + (open ? '' : ' locked');
+    b.style.background = `linear-gradient(180deg, ${hx(z.skyTop)} 0%, ${hx(z.skyMid)} 45%, ${hx(z.skyHorizon)} 70%)`;
+    const sunC = z.sunSize > 0.2 ? hx(z.sunColor) : z.moon > 0.5 ? '#f4eee0' : 'transparent';
+    b.innerHTML = `<div class="sun" style="background:${sunC};opacity:${z.sunSize > 0.2 ? 0.9 : 0.7};${z.sunSize > 0.2 ? '' : 'width:16%;left:70%;top:14%'}"></div>`
+      + `<div class="hill" style="background:${hx(z.fogColor.clone().lerp(z.hemiGround, 0.55))}"></div>`
+      + `<div class="water" style="background:linear-gradient(180deg, ${hx(z.waterTint.clone().lerp(z.waterDeep, 0.35))}, ${hx(z.waterDeep)})"></div>`
+      + `<div class="num">${i + 1} / ${ZONES.length}</div>`
+      + (open ? '' : '<svg class="lock ic" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>')
+      + `<div class="lbl">${open ? t(z.nameKey) : t('locked')}</div>`;
+    b.setAttribute('aria-label', open ? t(z.nameKey) : t('locked'));
+    if (open) b.onclick = () => sailFrom(i); else b.disabled = true;
+    grid.appendChild(b);
+  });
+}
 
 // ---------- ripples ----------
 const ripples = water.material.uniforms.ripples.value; let ripIdx = 0;
@@ -346,7 +416,7 @@ function frame() {
   const uEnd = 0.975;
   let u = Math.min(ST.s / path.L, 1);
   if (u > uEnd && !ST.ended && ST.mode === 'play') { ST.ended = true; }
-  if (ST.ended) { ST.endTimer += dt; if (ST.endTimer > 2.5 && $('endScreen').classList.contains('hidden')) { $('endScreen').classList.remove('hidden'); rowBtn.classList.add('hidden'); audio.fadeOutEnd(true); } }
+  if (ST.ended) { ST.endTimer += dt; if (ST.endTimer > 2.5 && !ST.endShown) { ST.endShown = true; markReached(ZONES.length - 1); zt.classList.remove('show'); clearTimeout(setZoneTitle.tm); $('endScreen').classList.remove('hidden'); rowBtn.classList.add('hidden'); audio.fadeOutEnd(true); } }
   u = Math.min(u, 0.995);
   const pt = path.curve.getPointAt(u), tg = path.curve.getTangentAt(u);
   const sway = Math.sin(time * 0.21) * 1.2;
@@ -376,15 +446,18 @@ function frame() {
   scene.fog.color.copy(P.fogColor); scene.fog.near = P.fogNear; scene.fog.far = P.fogFar;
   hemi.color.copy(P.hemiSky); hemi.groundColor.copy(P.hemiGround); hemi.intensity = P.hemiInt;
   sun.color.copy(P.dirColor); sun.intensity = P.dirInt;
-  sun.position.copy(P.sunDir).multiplyScalar(100).add(boatPos); sun.position.y = Math.max(sun.position.y, 25 * (1 - P.blend) + 60 * P.blend); sun.target.position.copy(boatPos);
+  sun.position.copy(P.sunDir).multiplyScalar(100).add(boatPos); sun.position.y = Math.max(sun.position.y, 25 * (1 - P.night) + 60 * P.night); sun.target.position.copy(boatPos);
   // painterly shared lighting
-  PU.sunDir.value.copy(P.sunDir); PU.sunCol.value.copy(P.sunColor).multiplyScalar(0.35 + 0.65 * P.sunGlow * (1 - 0.6 * P.blend)).lerp(P.dirColor, P.blend * 0.5);
+  PU.sunDir.value.copy(P.sunDir); PU.sunCol.value.copy(P.sunColor).multiplyScalar(0.35 + 0.65 * P.sunGlow * (1 - 0.6 * P.night)).lerp(P.dirColor, P.night * 0.5);
   PU.shadowTint.value.copy(P.shadowTint);
+  // distant ridges travel with the boat (always on the horizon); thick fog swallows them
+  mountains.position.set(boatPos.x, 0, boatPos.z);
+  const fogK = THREE.MathUtils.smoothstep(P.fogFar, 420, 200);
   for (const L of mountains.userData.layers) {
-    const ml = L.mesh.material.uniforms;
-    ml.haze.value.copy(P.fogColor).lerp(P.skyHorizon, 0.25 + 0.3 * L.depth);
-    ml.col.value.copy(P.fogColor).multiplyScalar(0.62 + 0.25 * L.depth).lerp(P.skyTop, 0.22 + 0.2 * L.depth).lerp(ml.haze.value, 0.15 + L.depth * 0.5);
-    ml.rim.value.copy(P.sunColor).multiplyScalar(P.sunGlow * (1 - P.blend));
+    const ml = L.mesh.material.uniforms; ml.ctr.value.set(boatPos.x, boatPos.z);
+    ml.haze.value.copy(P.fogColor).lerp(P.skyHorizon, (0.25 + 0.3 * L.depth) * (1 - fogK));
+    ml.col.value.copy(P.fogColor).multiplyScalar(0.62 + 0.25 * L.depth).lerp(P.skyTop, 0.22 + 0.2 * L.depth).lerp(ml.haze.value, 0.15 + L.depth * 0.5).lerp(P.fogColor, fogK * (0.55 + 0.4 * L.depth));
+    ml.rim.value.copy(P.sunColor).multiplyScalar(P.sunGlow * (1 - P.night) * (1 - fogK));
   }
   if (SHADOWS && sun.castShadow) {
     // stable texel snapping avoids shimmering as the boat moves
@@ -405,23 +478,32 @@ function frame() {
   grade.uniforms.rays.value = P.rays * sunVis * Math.max(0, Math.min(1, P.sunDir.y * 8 + 0.6));
   grade.uniforms.rayCol.value.copy(P.sunColor).lerp(P.skyHorizon, 0.4);
   petals.material.uniforms.opacity.value = P.petals;
-  birds.material.uniforms.center.value.copy(boatPos); birds.material.uniforms.col.value.copy(P.fogColor).multiplyScalar(0.32).lerp(P.skyTop, 0.2); birds.material.uniforms.heading.value = heading; birds.visible = P.petals > 0.05; petals.material.uniforms.center.value.copy(boatPos); petals.visible = P.petals > 0.02 && (level >= 2 || QUALITY === 'low');
+  birds.material.uniforms.center.value.copy(boatPos); birds.material.uniforms.col.value.copy(P.fogColor).multiplyScalar(0.32).lerp(P.skyTop, 0.2); birds.material.uniforms.heading.value = heading; birds.visible = P.birds > 0.3; petals.material.uniforms.center.value.copy(boatPos); petals.visible = P.petals > 0.02 && (level >= 2 || QUALITY === 'low');
   petals.material.uniforms.light.value.copy(P.hemiSky).multiplyScalar(0.42 * P.hemiInt).add(tmpC.copy(P.dirColor).multiplyScalar(0.12 * P.dirInt));
-  flowers.material.uniforms.light.value.copy(petals.material.uniforms.light.value).multiplyScalar(0.85);
-  lilies.userData.blooms.material.color.setRGB(0.75 + 0.6 * P.lanternGlow, 0.6 + 0.4 * P.lanternGlow, 0.62 + 0.35 * P.lanternGlow);
+  flowerMat.uniforms.light.value.copy(petals.material.uniforms.light.value).multiplyScalar(0.85 + 0.6 * P.fireflies);
+  lilyBlooms.material.color.setRGB(0.75 + 0.6 * P.lanternGlow, 0.6 + 0.4 * P.lanternGlow, 0.62 + 0.35 * P.lanternGlow);
+  if (cloudMat) cloudMat.emissive.copy(P.cloudColor).lerp(P.skyHorizon, 0.5).multiplyScalar(0.55 * (1 - P.night));
   motes.material.uniforms.color.value.copy(P.motes).multiplyScalar(0.6 + P.lanternGlow * 1.4);
-  motes.material.uniforms.opacity.value = P.blend * P.blend;
+  motes.material.uniforms.opacity.value = P.fireflies; motes.visible = P.fireflies > 0.02;
   motes.material.uniforms.center.value.copy(boatPos);
-  skyL.material.uniforms.opacity.value = P.blend; skyL.material.uniforms.center.value.copy(boatPos);
-  skyL.visible = P.blend > 0.02;
+  skyL.material.uniforms.opacity.value = P.skyLanterns; skyL.material.uniforms.center.value.copy(boatPos);
+  skyL.visible = P.skyLanterns > 0.02;
   boat.light.intensity = 6 + 22 * P.lanternGlow;
   boat.lantern.children[0].material.color.setRGB(2.2 + 2.0 * P.lanternGlow, 1.1 + 1.0 * P.lanternGlow, 0.45 + 0.4 * P.lanternGlow);
   bridgeLights.forEach((l, i) => { l.intensity = (40 + 8 * Math.sin(time * 3 + i)) * P.lanternGlow; });
   for (const L of bridge.userData.lanterns) L.rotation.z = Math.sin(time * 1.2 + L.position.x) * 0.06;
 
-  // floating lanterns drift gently downstream
+  // finish building the far terrain / water depth in small slices (keeps start-up fast on phones)
+  if (!worldDone) { const bud = SHOT || rush > 0 ? 30 : 3; rush -= dt; const a = terrain.userData.step(bud), b = hmap.step(bud * 0.7); worldDone = a && b; }
+  // place streaming: only the places around the boat are drawn
+  for (const g of zoneGroups) g.visible = u > g.userData.u0 - 0.1 && u < g.userData.u1 + 0.06;
+  if (cloudMesh) cloudMesh.visible = u > 0.85;
+  for (const ch of terrain.userData.chunks) ch.visible = ch.userData.z1 < boatPos.z + 420 && ch.userData.z0 > boatPos.z - 700;
+  audio.setZone(P.from, P.to, P.blend);
+  // floating lanterns drift gently downstream (only around the lantern bridge)
   const items = floating.items; const lg = 0.25 + 0.75 * P.lanternGlow;
-  for (let i = 0; i < items.length; i++) {
+  const lanternsNear = Math.abs(u - BRIDGE_U) < 0.14; floating.paper.visible = floating.base.visible = lanternsNear;
+  for (let i = 0; lanternsNear && i < items.length; i++) {
     const it = items[i];
     const uu = it.u - (time * it.speed * 0.02) / path.L * 10;
     const up = path.curve.getPointAt(THREE.MathUtils.clamp(uu, 0, 1)), ut = path.curve.getTangentAt(THREE.MathUtils.clamp(uu, 0, 1));
@@ -440,7 +522,7 @@ function frame() {
   floating.paper.instanceMatrix.needsUpdate = true; floating.base.instanceMatrix.needsUpdate = true; floating.paper.instanceColor.needsUpdate = true;
 
   // zone title
-  if (ST.mode === 'play' && P.zoneIndex !== ST.zoneShown) { ST.zoneShown = P.zoneIndex; setZoneTitle(P.zoneIndex); }
+  if (ST.mode === 'play' && P.zoneIndex !== ST.zoneShown) { ST.zoneShown = P.zoneIndex; setZoneTitle(P.zoneIndex); markReached(P.zoneIndex); }
 
   // --- camera ---
   if (look.idle > 2.5) { look.tYaw *= 1 - Math.min(1, dt * 0.6); look.tPitch *= 1 - Math.min(1, dt * 0.6); }
@@ -467,7 +549,7 @@ function frame() {
 }
 
 // expose a tiny hook for automated screenshots
-window.__db = { look, post: { bloom, fxaa, grade, composer }, renderer, scene, setU: (v) => { ST.s = v * path.L; camInit = false; }, start: startGame, path, ST, row: (on) => { rowBtnHeld = on; } };
+window.__db = { zoneGroups, terrain, places: () => openPlaces('startScreen'), zones: ZONES, look, post: { bloom, fxaa, grade, composer }, renderer, scene, setU: (v) => { ST.s = v * path.L; camInit = false; }, start: startGame, path, ST, row: (on) => { rowBtnHeld = on; } };
 
 requestAnimationFrame(() => { fade.classList.add('off'); });
 if (SHOT) { document.body.classList.add('shot'); }
